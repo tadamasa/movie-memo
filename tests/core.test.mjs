@@ -2,42 +2,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  dueAfterglows, currentScore, filmScore, drift, driftRanking, onThisSeason, emotionProfile, emotionGaps,
-  bestByYear, gapGrid, regionOf, decadeOf, pickThreadSeeds, weaveThreads, buildSuggestPrompt, parseSuggest,
-  findFilm, dateLabel, fullDate,
+  filmScore, onThisSeason, bestByYear, gapGrid, regionOf, decadeOf, pickThreadSeeds, weaveThreads, buildSuggestPrompt, parseSuggest,
+  findFilm, dateLabel, fullDate, availableOn, parseServices, sameService, reviewLinks,
 } from '../js/core.js';
 import { parseDetail, parseCredits, ROLES } from '../js/tmdb.js';
 import { loadHub } from './gas-mock.mjs';
-
-test('余韻: 1週間たった鑑賞をたずね、答えたものと思い出し記録はたずねない', () => {
-  const views = [
-    { id: 'a', date: '2026-10-20' },
-    { id: 'b', date: '2026-10-20', afterglow: [{ checkpoint: 7, at: '2026-10-28' }] },
-    { id: 'c', date: '2015', recall: true },
-    { id: 'd', date: '2026-10-29' },
-  ];
-  const due = dueAfterglows(views, '2026-10-31');
-  assert.deepEqual(due.map(d => d.view.id), ['a']);
-  assert.equal(due[0].checkpoint, 7);
-});
-
-test('余韻: 1週間を逃して3か月が来たら、3か月だけをたずねる。期限を過ぎたらたずねない', () => {
-  assert.deepEqual(dueAfterglows([{ id: 'a', date: '2026-07-01' }], '2026-10-01').map(d => d.checkpoint), [90]);
-  assert.deepEqual(dueAfterglows([{ id: 'a', date: '2025-01-01' }], '2026-10-01'), []);
-});
-
-test('評価の動き: 余韻で付け直した点が今の評価になり、差が「あとから効いた」になる', () => {
-  const v = { id: 'v', filmId: 'f', date: '2026-01-01', score: 6, afterglow: [{ checkpoint: 7, score: 7 }, { checkpoint: 90, score: 9 }] };
-  assert.equal(currentScore(v), 9);
-  assert.equal(drift(v), 3);
-  assert.equal(drift({ score: 6 }), null);
-  const films = [{ id: 'f', title: 'A', status: 'seen' }, { id: 'g', title: 'B', status: 'seen' }];
-  const w = { id: 'w', filmId: 'g', date: '2026-02-01', score: 8, afterglow: [{ checkpoint: 7, score: 5 }] };
-  const r = driftRanking([v, w], films);
-  assert.equal(r.grew[0].film.id, 'f');
-  assert.equal(r.faded[0].film.id, 'g');
-  assert.equal(filmScore(films[0], [v, w]), 9);
-});
 
 test('いつかの今ごろ: 過去の年の前後10日だけを出す(年をまたぐ日付も)', () => {
   const views = [{ id: 'a', date: '2020-11-05' }, { id: 'b', date: '2026-10-30' }, { id: 'c', date: '2019-06-01' }, { id: 'd', date: '2018-01-03' }];
@@ -45,26 +14,9 @@ test('いつかの今ごろ: 過去の年の前後10日だけを出す(年をま
   assert.deepEqual(onThisSeason(views, '2026-12-28').map(v => v.id), ['d']);
 });
 
-test('感情: 数えて、しばらく起きていないものを空白として出す(退屈は出さない)', () => {
-  const views = [
-    { date: '2026-10-01', emotions: ['moved', 'humor'] },
-    { date: '2025-01-01', emotions: ['awe', 'boredom'] },
-    { date: '2015', recall: true, emotions: ['nostalgia'] },
-  ];
-  const prof = emotionProfile(views);
-  assert.equal(prof.find(p => p.key === 'moved').count, 1);
-  const gaps = emotionGaps(views, '2026-10-31').map(g => g.key);
-  assert.ok(gaps.includes('awe'));
-  assert.ok(gaps.includes('nostalgia'));
-  assert.ok(gaps.includes('beauty'));
-  assert.ok(!gaps.includes('moved'));
-  assert.ok(!gaps.includes('boredom'));
-  assert.equal(fullDate('2015'), '2015-07-01');
-});
-
-test('年ごとのいちばん: 今の評価で並べる', () => {
+test('年ごとのいちばん: 評価で並べる', () => {
   const films = [{ id: 'f', title: 'A' }, { id: 'g', title: 'B' }];
-  const views = [{ filmId: 'f', date: '2026-01-01', score: 7 }, { filmId: 'g', date: '2026-02-01', score: 6, afterglow: [{ score: 9 }] }];
+  const views = [{ filmId: 'f', date: '2026-01-01', score: 7 }, { filmId: 'g', date: '2026-02-01', score: 9 }];
   const best = bestByYear(views, films);
   assert.equal(best[0].year, '2026');
   assert.equal(best[0].top[0].film.id, 'g');
@@ -126,18 +78,37 @@ test('作り手の糸: 二人以上でつながる映画を上に出し、観た
   assert.ok(r.every(x => x.title !== 'A' && x.title !== '未来'));
 });
 
-test('AIの提案: 送る文に場面やメモを入れず、返答のJSONを読む', () => {
-  const films = [{ id: 'f', title: '秘密の映画', year: 2000, status: 'seen', directors: ['某'] }];
-  const views = [{ filmId: 'f', date: '2026-01-01', score: 8, peak: '誰にも言えない場面', memo: '私的なメモ', emotions: ['awe'] }];
+test('AIの提案: 送る文に感想を入れず、返答のJSONを読む', () => {
+  const films = [{ id: 'f', title: '秘密の映画', year: 2000, status: 'seen', directors: ['某'] }, { id: 'w', title: '観たい映画', status: 'want' }];
+  const views = [{ filmId: 'f', date: '2026-01-01', score: 8, text: '誰にも言えない感想' }];
   const p = buildSuggestPrompt({ films, views, today: '2026-10-31' });
   assert.ok(p.includes('秘密の映画'));
-  assert.ok(p.includes('圧倒された'));
-  assert.ok(!p.includes('誰にも言えない場面'));
-  assert.ok(!p.includes('私的なメモ'));
-  const items = parseSuggest('```json\n{"items":[{"lens":"gap","title":"X","year":"1970","why":"w"},{"lens":"zzz","title":"Y"},{"title":""}]}\n```');
+  assert.ok(p.includes('評価:8'));
+  assert.ok(p.includes('除く: 観たい映画'));
+  assert.ok(!p.includes('誰にも言えない感想'));
+  const items = parseSuggest('```json\n{"items":[{"lens":"far","title":"X","year":"1970","why":"w"},{"lens":"zzz","title":"Y"},{"title":""}]}\n```');
   assert.equal(items.length, 2);
   assert.equal(items[0].year, 1970);
-  assert.equal(items[1].lens, 'echo');
+  assert.equal(items[1].lens, 'near');
+});
+
+test('配信: 広告つきプランなども同じサービスとみなし、契約中のものだけを返す', () => {
+  const film = { providers: { flatrate: ['Netflix Standard with Ads', 'Amazon Prime Video', 'Hulu'] } };
+  assert.deepEqual(availableOn(film, ['Netflix', 'Amazon Prime Video', 'U-NEXT']), ['Netflix', 'Amazon Prime Video']);
+  assert.deepEqual(availableOn({}, ['Netflix']), []);
+  assert.ok(sameService('U-NEXT', 'unext'));
+  assert.ok(!sameService('Netflix', ''));
+  assert.deepEqual(parseServices('Netflix\nU-NEXT、Netflix'), ['Netflix', 'U-NEXT']);
+  assert.deepEqual(parseServices(''), ['Netflix', 'Amazon Prime Video', 'U-NEXT']);
+});
+
+test('ほかの人の感想: Xは「映画 感想」を添えて探し、原題があればLetterboxdも出す', () => {
+  const links = reviewLinks({ title: 'パスト ライブス/再会', originalTitle: 'Past Lives', year: 2023 });
+  const x = links.find(l => l.label === '感想(話題順)');
+  assert.ok(decodeURIComponent(x.url).includes('パスト ライブス/再会 映画 感想 min_faves:20'));
+  assert.ok(links.some(l => l.label === 'Letterboxd' && l.url.includes('Past%20Lives')));
+  assert.ok(links.some(l => l.group === 'ブログ'));
+  assert.ok(!reviewLinks({ title: '羅生門' }).some(l => l.label === 'Letterboxd'));
 });
 
 test('題名の照合は全角半角と記号を無視し、年が近いものだけを同じとみなす', () => {
@@ -156,13 +127,13 @@ test('時期の表示', () => {
 test('ハブ: 映画と鑑賞を受け取り、表に読みやすい列で書き、since より新しいものを返す', () => {
   const hub = loadHub();
   const film = { id: 'f1', title: '映画A', year: 1999, directors: ['甲', '乙'], status: 'seen', tmdbId: 5 };
-  const view = { id: 'v1', filmId: 'f1', date: '2026-10-31', place: 'theater', score: 8, peak: '雨の場面', ending: 'よかった', emotions: ['moved', 'awe'] };
+  const view = { id: 'v1', filmId: 'f1', date: '2026-10-31', place: 'stream', venue: 'Netflix', score: 8, text: '雨の場面がよかった' };
   const r1 = hub.post({ token: hub.token, since: 0, films: [{ id: 'f1', mtime: 10, data: film }], views: [{ id: 'v1', mtime: 10, data: view }] });
   assert.equal(r1.ok, true);
   assert.equal(r1.films.length, 1);
-  assert.equal(r1.views[0].data.peak, '雨の場面');
+  assert.equal(r1.views[0].data.text, '雨の場面がよかった');
   const rows = hub.sheets.get('views').rows;
-  assert.deepEqual(rows[1].slice(4, 12), ['2026-10-31', 'f1', '映画A', 'theater', '8', '雨の場面', 'よかった', 'moved,awe']);
+  assert.deepEqual(rows[1].slice(4, 11), ['2026-10-31', 'f1', '映画A', 'stream', 'Netflix', '8', '雨の場面がよかった']);
   assert.equal(hub.sheets.get('films').rows[1][6], '甲、乙');
   // 古い書き込みは無視する
   hub.post({ token: hub.token, since: r1.rev, films: [{ id: 'f1', mtime: 5, data: { ...film, title: '古い' } }] });

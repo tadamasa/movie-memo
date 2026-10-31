@@ -1,27 +1,26 @@
 // 画面に触れない計算。node --test で確かめられるようにここに集める。
 
-// ---------- 心が動いた種類 ----------
-// 美的感情の尺度 AESTHEMOS(Schindler ほか 2017, PLOS ONE 12(6): e0178899)の下位尺度から、
-// 映画で起きやすく、言葉にしやすいものを選んで日本語の言い回しにした。ジャンルではなく「自分に何が起きたか」で残す。
-export const EMOTIONS = [
-  ['moved', '心を揺さぶられた'], ['awe', '圧倒された'], ['beauty', '美しかった'], ['fascination', '目が離せなかった'],
-  ['humor', '笑った'], ['energy', '元気が出た'], ['relax', 'くつろいだ'], ['nostalgia', '懐かしかった'],
-  ['surprise', '驚いた'], ['insight', '気づきがあった'], ['challenge', '頭を使った'],
-  ['unease', '落ち着かなかった'], ['sadness', '悲しかった'], ['confusion', '分からなかった'], ['boredom', '退屈だった'],
-];
-export const EMOTION_LABEL = Object.fromEntries(EMOTIONS);
-// 退屈・分からないは「また味わいたい」ものではないので、空白の候補から外す
-const SEEKABLE = new Set(['moved', 'awe', 'beauty', 'fascination', 'humor', 'energy', 'relax', 'nostalgia', 'surprise', 'insight', 'challenge', 'unease', 'sadness']);
-
-// 何が効いたか
-export const FACTORS = [
-  ['story', '物語'], ['visual', '映像'], ['acting', '演技'], ['music', '音楽'], ['dialogue', '台詞'],
-  ['world', '世界観'], ['company', '一緒に観た人'], ['place', '観た場所'],
-];
-export const FACTOR_LABEL = Object.fromEntries(FACTORS);
-
-export const PLACES = [['theater', '映画館'], ['stream', '配信'], ['tv', 'テレビ'], ['disc', 'ディスク'], ['other', 'その他']];
+export const PLACES = [['stream', '配信'], ['theater', '映画館'], ['tv', 'テレビ'], ['disc', 'ディスク'], ['other', 'その他']];
 export const PLACE_LABEL = Object.fromEntries(PLACES);
+
+// ---------- 配信サービス ----------
+// 契約しているサービスの既定。TMDb(JustWatch)の提供元名と、ゆるく突き合わせる
+export const DEFAULT_SERVICES = ['Netflix', 'Amazon Prime Video', 'U-NEXT'];
+const normSvc = s => String(s || '').normalize('NFKC').toLowerCase().replace(/[\s\-_.]/g, '');
+// 「Netflix Standard with Ads」や「Amazon Prime Video with Ads」も同じサービスとみなす
+export function sameService(a, b) {
+  const x = normSvc(a), y = normSvc(b);
+  return !!x && !!y && (x === y || x.startsWith(y) || y.startsWith(x));
+}
+// その映画を、自分の契約で見放題で観られるサービス
+export function availableOn(film, services = DEFAULT_SERVICES) {
+  const flat = (film && film.providers && film.providers.flatrate) || [];
+  return services.filter(s => flat.some(p => sameService(p, s)));
+}
+export function parseServices(text) {
+  const list = String(text || '').split(/\n|,|、/).map(x => x.trim()).filter(Boolean);
+  return list.length ? [...new Set(list)] : DEFAULT_SERVICES.slice();
+}
 
 export const VIVID = [['vivid', 'まだ鮮明'], ['faint', 'ぼんやり'], ['gone', 'ほぼ消えた']];
 export const VIVID_LABEL = Object.fromEntries(VIVID);
@@ -56,38 +55,8 @@ export function dateLabel(v) {
   return v.dateNote || '時期不明';
 }
 
-// ---------- 余韻(あとからもう一度聞く) ----------
-// 思い出すときの評価は、いちばん強かった瞬間と終わりの印象でほぼ決まり、長さはあまり効かない
-// (Fredrickson & Kahneman 1993, JPSP 65(1) 45-55。実験の素材は映画の短い場面だった)。
-// その「思い出したときの評価」が時間でどう変わるかを、1週間後と3か月後に一度ずつ聞いて残す。
-export const CHECKPOINTS = [
-  { days: 7, window: 30, label: '1週間' },
-  { days: 90, window: 90, label: '3か月' },
-];
-
-export function dueAfterglows(views, today = ymd()) {
-  const out = [];
-  for (const v of views) {
-    if (v.recall || !/^\d{4}-\d{2}-\d{2}$/.test(v.date || '')) continue;
-    const age = daysBetween(v.date, today);
-    if (age === null) continue;
-    const done = new Set((v.afterglow || []).map(a => a.checkpoint));
-    for (const c of CHECKPOINTS) {
-      if (done.has(c.days) || age < c.days || age >= c.days + c.window) continue;
-      // 7日目を逃して90日目が来たら、新しい方だけを聞く
-      out.push({ view: v, checkpoint: c.days, label: c.label, age });
-    }
-  }
-  const latest = new Map();
-  for (const d of out) if (!latest.has(d.view.id) || latest.get(d.view.id).checkpoint < d.checkpoint) latest.set(d.view.id, d);
-  return [...latest.values()].sort((a, b) => a.age - b.age);
-}
-
-// 一度の鑑賞の、今の評価(余韻で付け直していればそれ)
 export function currentScore(v) {
-  const ag = (v.afterglow || []).filter(a => typeof a.score === 'number');
-  if (ag.length) return ag[ag.length - 1].score;
-  return typeof v.score === 'number' ? v.score : null;
+  return v && typeof v.score === 'number' ? v.score : null;
 }
 
 // 映画の評価: いちばん新しい鑑賞の今の評価
@@ -95,23 +64,6 @@ export function filmScore(film, views) {
   const vs = views.filter(v => v.filmId === film.id).sort((a, b) => dateSortKey(b).localeCompare(dateSortKey(a)));
   for (const v of vs) { const s = currentScore(v); if (s !== null) return s; }
   return null;
-}
-
-// 観た直後から余韻までの評価の動き。正なら「あとから効いた」、負なら「その場かぎり」
-export function drift(v) {
-  if (typeof v.score !== 'number') return null;
-  const ag = (v.afterglow || []).filter(a => typeof a.score === 'number');
-  if (!ag.length) return null;
-  return ag[ag.length - 1].score - v.score;
-}
-
-export function driftRanking(views, films) {
-  const byId = new Map(films.map(f => [f.id, f]));
-  const rows = views.map(v => ({ view: v, film: byId.get(v.filmId), drift: drift(v) })).filter(r => r.film && r.drift !== null);
-  return {
-    grew: rows.filter(r => r.drift >= 1).sort((a, b) => b.drift - a.drift),
-    faded: rows.filter(r => r.drift <= -1).sort((a, b) => a.drift - b.drift),
-  };
 }
 
 // ---------- 振り返り ----------
@@ -126,29 +78,6 @@ export function onThisSeason(views, today = ymd(), range = 10) {
     diff = Math.min(diff, 365 - diff);
     return diff <= range;
   }).sort((a, b) => b.date.localeCompare(a.date));
-}
-
-// 期間内で、どの感情が何回起きたか。最後に起きた日も返す
-export function emotionProfile(views, { from = '', to = '9999' } = {}) {
-  const map = new Map(EMOTIONS.map(([k]) => [k, { key: k, label: EMOTION_LABEL[k], count: 0, last: '' }]));
-  for (const v of views) {
-    const d = dateSortKey(v);
-    if (d < from || d > to) continue;
-    for (const e of v.emotions || []) {
-      const r = map.get(e);
-      if (!r) continue;
-      r.count++;
-      if (d > r.last) r.last = d;
-    }
-  }
-  return [...map.values()];
-}
-
-// しばらく味わっていない感情: 一度も起きていないか、最後が days 日より前
-export function emotionGaps(views, today = ymd(), days = 120) {
-  const prof = emotionProfile(views);
-  return prof.filter(p => SEEKABLE.has(p.key) && (!p.count || (daysBetween(fullDate(p.last), today) ?? 0) > days))
-    .map(p => ({ ...p, never: !p.count }));
 }
 
 // 年ごとのいちばん(今の評価が高い順、同点は新しい順)
@@ -252,38 +181,32 @@ export function weaveThreads(seeds, creditsByPerson, { exclude = new Set(), role
 
 // ---------- Geminiでの提案 ----------
 export const LENSES = [
-  ['echo', 'あとから効いた映画と同じ効き方'],
-  ['gap', 'しばらく味わっていない感情'],
-  ['elsewhere', '好きな映画の問いを、別の国・時代で'],
-  ['edge', '苦手の手前にある一本'],
+  ['near', '近い'],
+  ['far', '遠いのに通じる'],
+  ['counter', '反対側から'],
+  ['unknown', 'まだ観ていない領域'],
 ];
 export const LENS_LABEL = Object.fromEntries(LENSES);
 
-export function buildSuggestPrompt({ films, views, gaps = [], today = ymd() }) {
+// 送るのは題名・年・監督・評価だけ。感想の文章は送らない
+export function buildSuggestPrompt({ films, views, today = ymd() }) {
   const lines = [];
   lines.push('あなたは映画に詳しい選び手です。下の鑑賞記録の持ち主に、まだ観ていない映画を提案します。');
   lines.push('ありがちな定番や、記録にある監督の代表作ばかりにならないようにし、実在が確かな長編映画だけを挙げてください。確信がないものは挙げません。');
   lines.push('観点ごとに2本ずつ、計8本。観点は次の4つです。');
-  lines.push('- echo: 「あとから効いた」映画と、効き方(どの感情が残ったか)が近い映画');
-  lines.push('- gap: 持ち主がしばらく味わっていない感情を起こしやすい映画');
-  lines.push('- elsewhere: 高く評価した映画が扱った問いを、別の国・別の時代に扱った映画');
-  lines.push('- edge: 低く評価した傾向の、ほんの少し手前にあり、苦手を越える入口になりそうな映画');
-  lines.push('JSONで {"items":[{"lens":"echo","title":"日本での題名","originalTitle":"原題","year":1999,"director":"監督","country":"国","why":"この人に勧める理由を1文"}]} の形だけを返します。why は記録のどの映画・感情とつながるかを具体的に書きます。');
+  lines.push('- near: 高く評価した映画に近い映画');
+  lines.push('- far: 国・時代・ジャンルは遠いのに、高く評価した映画と通じるところがある映画');
+  lines.push('- counter: 高く評価した映画と反対の立場・語り口から同じ主題を扱った映画');
+  lines.push('- unknown: 記録にほとんどない国・年代・ジャンルへの入口になる映画');
+  lines.push('JSONで {"items":[{"lens":"near","title":"日本での題名","originalTitle":"原題","year":1999,"director":"監督","country":"国","why":"この人に勧める理由を1文"}]} の形だけを返します。why は記録のどの映画とつながるかを具体的に書きます。');
   lines.push('');
   lines.push(`今日: ${today}`);
-  const seen = films.filter(f => f.status === 'seen');
-  const rows = seen.map(f => {
-    const vs = views.filter(v => v.filmId === f.id);
-    const v = vs.sort((a, b) => dateSortKey(b).localeCompare(dateSortKey(a)))[0] || {};
-    const d = drift(v);
-    return { f, score: filmScore(f, views), emotions: [...new Set(vs.flatMap(x => x.emotions || []))], drift: d };
-  }).sort((a, b) => (b.score ?? -1) - (a.score ?? -1)).slice(0, 40);
-  lines.push('鑑賞記録(評価は10点満点、「→」は余韻で付け直した変化):');
+  const rows = films.filter(f => f.status === 'seen').map(f => ({ f, score: filmScore(f, views) }))
+    .sort((a, b) => (b.score ?? -1) - (a.score ?? -1)).slice(0, 50);
+  lines.push('鑑賞記録(評価は10点満点):');
   for (const r of rows) {
-    const em = r.emotions.map(e => EMOTION_LABEL[e]).filter(Boolean).join('・');
-    lines.push(`- ${r.f.title}${r.f.year ? `(${r.f.year})` : ''}${r.f.directors && r.f.directors.length ? ` 監督:${r.f.directors.join('、')}` : ''} 評価:${r.score ?? '未'}${r.drift ? ` (余韻で${r.drift > 0 ? '+' : ''}${r.drift})` : ''}${em ? ` 感情:${em}` : ''}`);
+    lines.push(`- ${r.f.title}${r.f.year ? `(${r.f.year})` : ''}${r.f.directors && r.f.directors.length ? ` 監督:${r.f.directors.join('、')}` : ''} 評価:${r.score ?? '未'}`);
   }
-  if (gaps.length) lines.push(`しばらく味わっていない感情: ${gaps.map(g => g.label).join('、')}`);
   const want = films.filter(f => f.status === 'want').map(f => f.title);
   if (want.length) lines.push(`すでに観たいリストにあるので除く: ${want.slice(0, 60).join('、')}`);
   return lines.join('\n');
@@ -298,7 +221,7 @@ export function parseSuggest(text) {
   }
   const items = Array.isArray(data) ? data : data.items || [];
   return items.filter(x => x && x.title).map(x => ({
-    lens: LENS_LABEL[x.lens] ? x.lens : 'echo', title: String(x.title), originalTitle: x.originalTitle ? String(x.originalTitle) : '',
+    lens: LENS_LABEL[x.lens] ? x.lens : 'near', title: String(x.title), originalTitle: x.originalTitle ? String(x.originalTitle) : '',
     year: Number(x.year) || null, director: x.director ? String(x.director) : '', country: x.country ? String(x.country) : '', why: x.why ? String(x.why) : '',
   }));
 }
@@ -311,4 +234,27 @@ export function findFilm(films, { tmdbId, title, year }) {
   if (tmdbId) { const f = films.find(x => x.tmdbId === tmdbId); if (f) return f; }
   const t = normTitle(title);
   return films.find(f => (normTitle(f.title) === t || (f.originalTitle && normTitle(f.originalTitle) === t)) && (!year || !f.year || Math.abs(f.year - year) <= 1)) || null;
+}
+
+// ---------- 他の人の感想 ----------
+// 題名だけでは同名の別作品や小説が混ざるので、「映画」や公開年を添えて探す
+export function reviewLinks(f) {
+  const t = f.title;
+  const enc = encodeURIComponent;
+  const year = f.year ? ` ${f.year}` : '';
+  const links = [
+    { group: 'X', label: '感想(話題順)', url: `https://x.com/search?q=${enc(`${t} 映画 感想 min_faves:20`)}&f=top` },
+    { group: 'X', label: '感想(新しい順)', url: `https://x.com/search?q=${enc(`${t} 映画 感想`)}&f=live` },
+    { group: 'レビュー', label: 'Filmarks', url: `https://filmarks.com/search/movies?q=${enc(t)}` },
+    { group: 'レビュー', label: '映画.com', url: `https://eiga.com/search/${enc(t)}/` },
+    { group: 'ブログ', label: 'はてなブログ', url: `https://hatenablog.com/search?q=${enc(`${t} 映画 感想`)}` },
+    { group: 'ブログ', label: 'note', url: `https://note.com/search?q=${enc(`${t} 映画`)}&context=note` },
+    { group: 'ブログ', label: 'ブログを検索', url: `https://www.google.com/search?q=${enc(`"${t}" 映画 感想 ブログ${year}`)}` },
+    { group: '動画', label: '予告編', url: `https://www.youtube.com/results?search_query=${enc(`${t} 予告`)}` },
+    { group: '動画', label: '解説・考察', url: `https://www.youtube.com/results?search_query=${enc(`${t} 映画 解説 考察`)}` },
+  ];
+  const orig = f.originalTitle || (/^[\x00-\x7F]+$/.test(t) ? t : '');
+  if (orig) links.push({ group: '海外', label: 'Letterboxd', url: `https://letterboxd.com/search/films/${enc(orig)}/` });
+  links.push({ group: '海外', label: 'Wikipedia', url: `https://ja.wikipedia.org/w/index.php?search=${enc(`${t} 映画`)}` });
+  return links;
 }

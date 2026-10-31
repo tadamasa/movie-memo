@@ -33,7 +33,7 @@ Code.gs を貼り替えて保存したら、「デプロイ」→「デプロイ
 | シート | 主な列 |
 |---|---|
 | films | id, title(題名), year(公開年), directors(監督), status(観た/観たい), tmdbId |
-| views | id, date(観た日。思い出し記録では 2015 や 2015-08 のこともある), filmId, filmTitle, place(theater/stream/tv/disc/other), score(10点満点), peak(いちばんの場面), ending(観終わった直後), emotions(心が動いた種類、カンマ区切り) |
+| views | id, date(観た日。昔観た映画では 2015 や 2015-08 のこともある), filmId, filmTitle, place(stream/theater/tv/disc/other), venue(配信サービスや劇場), score(10点満点), text(感想) |
 
 - `deleted` が `true` の行は削除済みです。読むときは飛ばしてください。
 - 最後の `json` 列がアプリの元データです。表を手で書き換えても、アプリには反映されません。
@@ -48,7 +48,7 @@ function moviesOn(date) { // date: '2026-10-31'
   const col = name => head.indexOf(name);
   return rows
     .filter(r => r[col('date')] === date && String(r[col('deleted')]) !== 'true')
-    .map(r => ({ title: r[col('filmTitle')], peak: r[col('peak')], ending: r[col('ending')] }));
+    .map(r => ({ title: r[col('filmTitle')], venue: r[col('venue')], text: r[col('text')] }));
 }
 ```
 

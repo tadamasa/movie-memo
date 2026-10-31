@@ -13,7 +13,7 @@
  */
 
 const FILM_COLS = ['id', 'rev', 'mtime', 'deleted', 'title', 'year', 'directors', 'status', 'tmdbId', 'json'];
-const VIEW_COLS = ['id', 'rev', 'mtime', 'deleted', 'date', 'filmId', 'filmTitle', 'place', 'score', 'peak', 'ending', 'emotions', 'json'];
+const VIEW_COLS = ['id', 'rev', 'mtime', 'deleted', 'date', 'filmId', 'filmTitle', 'place', 'venue', 'score', 'text', 'json'];
 const STATUS = { want: '観たい', seen: '観た' };
 const NAMES = ['films', 'views'];
 const COLS = { films: FILM_COLS, views: VIEW_COLS };
@@ -96,7 +96,7 @@ function viewRow_(item, rev, titles) {
   const v = item.data || {};
   const score = typeof v.score === 'number' ? String(v.score) : '';
   return [item.id, String(rev), String(Number(item.mtime || 0)), String(!!item.deleted), v.date || '', v.filmId || '', titles[v.filmId] || '',
-    v.place || '', score, v.peak || '', v.ending || '', (v.emotions || []).join(','), item.deleted ? '' : cell_(v)];
+    v.place || '', v.venue || '', score, v.text || '', item.deleted ? '' : cell_(v)];
 }
 
 // 1セルは5万字まで。超えるときは長い項目を削って入れる
@@ -135,5 +135,5 @@ function moviesOn(date) {
   if (sh.getLastRow() < 2) return [];
   return sh.getRange(2, 1, sh.getLastRow() - 1, VIEW_COLS.length).getValues()
     .filter(r => r[4] === date && String(r[3]) !== 'true')
-    .map(r => ({ title: r[6], place: r[7], score: r[8], peak: r[9], ending: r[10] }));
+    .map(r => ({ title: r[6], place: r[7], venue: r[8], score: r[9], text: r[10] }));
 }

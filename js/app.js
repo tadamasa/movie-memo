@@ -4,19 +4,19 @@ import * as gemini from './gemini.js';
 import * as sync from './sync.js';
 import { exportData, importData } from './backup.js';
 import {
-  EMOTIONS, EMOTION_LABEL, FACTORS, FACTOR_LABEL, PLACES, PLACE_LABEL, VIVID, VIVID_LABEL,
-  ymd, dateLabel, dateSortKey, dueAfterglows, currentScore, filmScore, drift, driftRanking,
-  onThisSeason, emotionProfile, emotionGaps, bestByYear, REGIONS, DECADES, gapGrid,
-  pickThreadSeeds, weaveThreads, LENSES, LENS_LABEL, buildSuggestPrompt, parseSuggest, findFilm,
+  PLACES, PLACE_LABEL, DEFAULT_SERVICES, availableOn, parseServices, sameService,
+  ymd, dateLabel, dateSortKey, currentScore, filmScore, onThisSeason, bestByYear, REGIONS, DECADES, gapGrid,
+  pickThreadSeeds, weaveThreads, LENSES, buildSuggestPrompt, parseSuggest, findFilm, reviewLinks,
 } from './core.js';
 
 // ---------- 状態 ----------
-const state = { films: [], views: [] };
+const state = { films: [], views: [], services: DEFAULT_SERVICES.slice() };
 let shelfFilter = 'seen';
 let shelfSort = 'date';
 let shelfQuery = '';
+let shelfGrid = true;
+let wantMine = false; // 観たいを「契約中の配信で観られる」だけにする
 let addMode = 'seen';
-let lookRange = 'all';
 let threadResult = null; // 作り手の糸の最後の結果(画面を移っても残す)
 let suggestResult = null;
 let gapResult = null;
@@ -62,6 +62,9 @@ async function load() {
   [state.films, state.views] = await Promise.all([db.getAll('films'), db.getAll('views')]);
   tmdb.setKey(await db.getMeta('tmdbKey', ''));
   shelfSort = (await db.getMeta('shelfSort')) || shelfSort;
+  if (!SORTS[shelfSort]) shelfSort = 'date';
+  shelfGrid = (await db.getMeta('shelfGrid', true)) !== false;
+  state.services = parseServices(await db.getMeta('services', ''));
 }
 
 async function saveFilm(f) {
@@ -82,9 +85,11 @@ async function saveView(v) {
   return v;
 }
 
+// ポスター。sm=一覧の小、md=横の帯、lg=詳細、fill=格子(幅いっぱい)
 function posterHtml(f, size = 'sm') {
-  const src = tmdb.posterUrl(f && f.posterPath, size === 'lg' ? 'w342' : 'w154');
-  const ph = esc(((f && f.title) || '?').slice(0, 1));
+  const w = { sm: 'w154', md: 'w185', lg: 'w342', fill: 'w342' }[size] || 'w185';
+  const src = tmdb.posterUrl(f && f.posterPath, w);
+  const ph = esc(((f && f.title) || '?').slice(0, 12));
   return `<span class="cover cover--${size}" aria-hidden="true"><span class="cover__ph">${ph}</span>${src ? `<img src="${esc(src)}" alt="" loading="lazy" onerror="this.remove()">` : ''}</span>`;
 }
 
@@ -110,20 +115,6 @@ function bindScore(id) {
     el.setAttribute('aria-valuetext', `${el.value}点`);
   });
   return () => (el.classList.contains('is-unset') ? null : Number(el.value));
-}
-
-function chipsHtml(list, selected, name) {
-  return `<div class="kinds" role="group" data-chips="${name}">${list.map(([k, l]) => `<button type="button" class="kind ${selected.includes(k) ? 'is-active' : ''}" data-k="${k}" aria-pressed="${selected.includes(k)}">${esc(l)}</button>`).join('')}</div>`;
-}
-function bindChips(root, name, { single = false } = {}) {
-  const box = root.querySelector(`[data-chips="${name}"]`);
-  box.querySelectorAll('.kind').forEach(b => b.addEventListener('click', () => {
-    const on = !b.classList.contains('is-active');
-    if (single) box.querySelectorAll('.kind').forEach(x => { x.classList.remove('is-active'); x.setAttribute('aria-pressed', 'false'); });
-    b.classList.toggle('is-active', on);
-    b.setAttribute('aria-pressed', on);
-  }));
-  return () => [...box.querySelectorAll('.kind.is-active')].map(b => b.dataset.k);
 }
 
 function filmRow(f, sub = '') {
@@ -165,68 +156,52 @@ async function enrich(f, { force = false } = {}) {
 }
 
 // ---------- 記録(ホーム) ----------
+// ポスターを横に並べる帯
+function stripHtml(films, sub) {
+  return `<div class="strip">${films.map(f => `<a class="strip__item" href="#film/${esc(f.id)}">${posterHtml(f, 'md')}<span class="strip__title">${esc(f.title)}</span>${sub(f) ? `<span class="strip__sub">${sub(f)}</span>` : ''}</a>`).join('')}</div>`;
+}
+
+function serviceBadges(f) {
+  const mine = availableOn(f, state.services);
+  return mine.map(s => `<span class="svc">${esc(shortService(s))}</span>`).join('');
+}
+function shortService(s) {
+  if (sameService(s, 'Amazon Prime Video')) return 'Prime';
+  return s;
+}
+
 function renderHome() {
   setTab('home');
-  setTitle('記録');
-  const due = dueAfterglows(state.views);
-  const recent = recentViews().slice(0, 6);
+  setTitle('映画メモ');
+  const recent = [];
+  const seenIds = new Set();
+  for (const v of recentViews()) { const f = filmById(v.filmId); if (f && !seenIds.has(f.id)) { seenIds.add(f.id); recent.push({ f, v }); } if (recent.length >= 12) break; }
+  const want = wantFilms();
+  const ready = want.filter(f => availableOn(f, state.services).length);
   $view.innerHTML = `
     <div class="actions" style="padding-top:var(--space-2)">
       <a class="btn btn--prominent btn--large" href="#add/seen">観た映画を記録</a>
     </div>
     <div class="actions" style="padding-top:0">
-      <a class="btn btn--tinted" href="#add/recall">昔の映画を思い出す</a>
       <a class="btn btn--tinted" href="#add/want">観たいを足す</a>
+      <a class="btn btn--tinted" href="#add/recall">昔観た映画</a>
     </div>
-    ${due.length ? `<section class="list-section"><h2 class="list-section__header">余韻をたずねる</h2>
-      ${due.map(afterglowCard).join('')}
-      <p class="list-section__footer">観た直後の評価と、時間がたってからの評価は違うことがあります。思い出すたびに付け直すのではなく、1週間後と3か月後に一度ずつだけ聞きます。</p></section>` : ''}
-    ${recent.length ? `<section class="list-section"><h2 class="list-section__header">最近の鑑賞</h2><ul class="list list--inset">
-      ${recent.map(v => { const f = filmById(v.filmId); return f ? filmRow(f, [dateLabel(v), PLACE_LABEL[v.place], scoreText(currentScore(v))].filter(Boolean).join(' ・ ')) : ''; }).join('')}
-    </ul></section>` : `<div class="empty">
+    ${ready.length ? `<section class="list-section"><h2 class="list-section__header">今夜、契約中の配信で観られる</h2>
+      ${stripHtml(ready.slice(0, 15), f => serviceBadges(f))}</section>` : ''}
+    ${recent.length ? `<section class="list-section"><h2 class="list-section__header">最近観た</h2>
+      ${stripHtml(recent.map(r => r.f), f => { const v = recent.find(r => r.f === f).v; return esc([dateLabel(v).replace(/^\d{4}\//, ''), scoreText(currentScore(v))].filter(Boolean).join(' ・ ')); })}</section>` : ''}
+    ${want.length ? `<section class="list-section"><h2 class="list-section__header">観たい ${want.length}本 <a href="#explore" class="small">すべて</a></h2>
+      ${stripHtml(want.slice(0, 15), f => serviceBadges(f))}</section>` : ''}
+    ${!recent.length && !want.length ? `<div class="empty">
       <p class="empty__title">最初の1本を記録しましょう</p>
-      <p class="empty__message">点数より先に「いちばんの場面」と「観終わった直後の気持ち」を一言ずつ残します。昔観た映画は、覚えている場面だけで記録できます。</p>
-    </div>`}`;
-  bindAfterglow($view, renderHome);
+      <p class="empty__message">観た映画も、観たい映画も、題名で探してポスター付きで残せます。設定でTMDbのキーを入れると題名から探せます。</p>
+    </div>` : ''}`;
 }
 
-function afterglowCard({ view, label }) {
-  const f = filmById(view.filmId);
-  if (!f) return '';
-  const now = currentScore(view);
-  return `<div class="card afterglow" data-view="${esc(view.id)}">
-    <div class="afterglow__head">${posterHtml(f)}<div><b>${esc(f.title)}</b><p class="small muted" style="margin:2px 0 0">観てから${label}。${view.peak ? `あのとき「${esc(view.peak.slice(0, 40))}」と書きました。` : ''}いま思い出すと?</p></div></div>
-    <div class="segmented" role="group" data-vivid>${VIVID.map(([k, l]) => `<button type="button" class="segmented__item" data-k="${k}">${l}</button>`).join('')}</div>
-    ${scoreRow(`ag-${view.id}`, now, '今の評価')}
-    <textarea class="field" rows="2" data-note placeholder="いま残っている場面・考えていること(任意)"></textarea>
-    <div class="actions" style="padding:var(--space-2) 0 0"><button class="btn btn--plain btn--small" data-skip>今回はとばす</button><button class="btn btn--prominent btn--small" data-save>残す</button></div>
-  </div>`;
-}
-
-function bindAfterglow(root, rerender) {
-  root.querySelectorAll('.afterglow').forEach(card => {
-    const v = state.views.find(x => x.id === card.dataset.view);
-    const due = dueAfterglows([v])[0];
-    let vivid = null;
-    card.querySelectorAll('[data-vivid] .segmented__item').forEach(b => b.addEventListener('click', () => {
-      vivid = b.dataset.k;
-      card.querySelectorAll('[data-vivid] .segmented__item').forEach(x => x.classList.toggle('is-active', x === b));
-    }));
-    const getScore = bindScore(`ag-${v.id}`);
-    const save = async skipped => {
-      v.afterglow = v.afterglow || [];
-      v.afterglow.push(skipped ? { checkpoint: due.checkpoint, at: ymd(), skipped: true }
-        : { checkpoint: due.checkpoint, at: ymd(), vivid, score: getScore(), note: card.querySelector('[data-note]').value.trim() });
-      await saveView(v);
-      const d = drift(v);
-      toast(skipped ? 'とばしました' : d >= 1 ? `あとから効いた映画です(+${d})` : d <= -1 ? `余韻で${d}になりました` : '残しました');
-      rerender();
-    };
-    card.querySelector('[data-save]').addEventListener('click', () => {
-      if (!vivid && getScore() === null) { toast('鮮明さか評価のどちらかを選んでください'); return; }
-      save(false);
-    });
-    card.querySelector('[data-skip]').addEventListener('click', () => save(true));
+function wantFilms() {
+  return state.films.filter(f => f.status === 'want').sort((a, b) => {
+    const ma = availableOn(a, state.services).length ? 1 : 0, mb = availableOn(b, state.services).length ? 1 : 0;
+    return mb - ma || ((b.want && b.want.addedAt) || '').localeCompare((a.want && a.want.addedAt) || '');
   });
 }
 
@@ -305,49 +280,53 @@ function renderLog(filmId, arg) {
   if (!f) { location.hash = '#home'; return; }
   const editing = arg && arg !== 'new' && arg !== 'recall' ? state.views.find(v => v.id === arg) : null;
   const recall = editing ? !!editing.recall : arg === 'recall';
-  const v = editing || { id: db.uid(), filmId, recall, date: recall ? '' : ymd(), place: recall ? '' : 'theater', emotions: [], factors: [] };
+  const v = editing || { id: db.uid(), filmId, recall, date: recall ? '' : ymd(), place: recall ? '' : 'stream' };
   setTab('home');
-  setTitle(editing ? '鑑賞を直す' : recall ? '思い出して記録' : '鑑賞を記録', { back: true });
+  setTitle(editing ? '鑑賞を直す' : recall ? '昔観た映画' : '観た映画を記録', { back: true });
+  const services = [...new Set([...state.services, ...(v.venue && v.place === 'stream' ? [v.venue] : [])])];
   $view.innerHTML = `
-    <div class="book-head book-head--cover">${posterHtml(f)}<div><h2>${esc(f.title)}</h2><p class="muted small">${esc(filmMeta(f))}</p></div></div>
-    ${recall ? `<p class="list-section__footer" style="margin-top:0">記憶は思い出すたびに組み立て直されます(Bartlett『Remembering』1932)。いま残っている場面こそ、この映画があなたに残したものです。思い出せないところは空けておいて構いません。</p>` : ''}
+    <div class="book-head book-head--cover">${posterHtml(f, 'md')}<div><h2>${esc(f.title)}</h2><p class="muted small">${esc(filmMeta(f))}</p></div></div>
     <div class="card">
       ${recall
-        ? `<div class="row"><label for="v-date">時期</label><input id="v-date" placeholder="例 2015 / 2015-08" value="${esc(v.date)}" inputmode="numeric"></div>
-           <div class="row"><label for="v-datenote">ことば</label><input id="v-datenote" placeholder="例 学生時代、引っ越した年" value="${esc(v.dateNote || '')}"></div>`
+        ? `<div class="row"><label for="v-date">時期</label><input id="v-date" placeholder="例 2015 / 2015-08(任意)" value="${esc(v.date)}" inputmode="numeric"></div>
+           <div class="row"><label for="v-datenote">ことば</label><input id="v-datenote" placeholder="例 学生時代(任意)" value="${esc(v.dateNote || '')}"></div>`
         : `<div class="row"><label for="v-date">観た日</label><input id="v-date" type="date" value="${esc(v.date)}"></div>`}
-      <div class="row"><label for="v-place">場所</label><select id="v-place"><option value="">-</option>${PLACES.map(([k, l]) => `<option value="${k}" ${v.place === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
-      <div class="row"><label for="v-venue">劇場・サービス</label><input id="v-venue" value="${esc(v.venue || '')}" placeholder="任意"></div>
+      <div class="row"><label for="v-place">どこで</label><select id="v-place"><option value="">-</option>${PLACES.map(([k, l]) => `<option value="${k}" ${v.place === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div class="row" id="svc-row"><label for="v-venue" id="venue-label">${v.place === 'stream' ? 'サービス' : '劇場など'}</label><input id="v-venue" value="${esc(v.venue || '')}" placeholder="任意"></div>
       <div class="row"><label for="v-with">誰と</label><input id="v-with" value="${esc(v.with || '')}" placeholder="任意"></div>
       ${scoreRow('v-score', v.score)}
     </div>
-    <h3 class="form-label">${recall ? '覚えている場面' : 'いちばんの場面'}</h3>
-    <div class="card"><textarea class="field field--note" id="v-peak" placeholder="${recall ? '何年たっても浮かぶ場面・台詞・音' : '心がいちばん動いた瞬間。台詞・音・構図でも'}">${esc(v.peak || '')}</textarea></div>
-    <h3 class="form-label">${recall ? 'いま思い返して' : '観終わった直後の気持ち'}</h3>
-    <div class="card"><textarea class="field" rows="3" id="v-ending" placeholder="${recall ? '思い出したら、どんな気分になるか' : '劇場を出たとき・画面を消したときの一言'}">${esc(v.ending || '')}</textarea></div>
-    <h3 class="form-label">心が動いた種類</h3>
-    ${chipsHtml(EMOTIONS, v.emotions || [], 'emo')}
-    <h3 class="form-label">何が効いたか</h3>
-    ${chipsHtml(FACTORS, v.factors || [], 'fac')}
-    <h3 class="form-label">メモ</h3>
-    <div class="card"><textarea class="field" rows="3" id="v-memo" placeholder="考えたこと・調べたいこと(任意)">${esc(v.memo || '')}</textarea></div>
+    <div class="kinds" id="svc-chips" ${v.place === 'stream' ? '' : 'hidden'}>${services.map(s => `<button type="button" class="kind ${v.venue === s ? 'is-active' : ''}" data-s="${esc(s)}">${esc(s)}</button>`).join('')}</div>
+    <h3 class="form-label">感想</h3>
+    <div class="card"><textarea class="field field--note" id="v-text" placeholder="思ったこと、好きな場面、誰かに話したいこと。音声はキーボードのマイクで">${esc(v.text || legacyText(v))}</textarea></div>
     <div class="actions">${editing ? '<button class="btn btn--destructive" id="v-del">この記録を消す</button>' : ''}<button class="btn btn--prominent" id="v-save">保存</button></div>`;
   const getScore = bindScore('v-score');
-  const getEmo = bindChips($view, 'emo');
-  const getFac = bindChips($view, 'fac');
+  const place = document.getElementById('v-place');
+  const venue = document.getElementById('v-venue');
+  const chips = document.getElementById('svc-chips');
+  place.addEventListener('change', () => {
+    const stream = place.value === 'stream';
+    chips.hidden = !stream;
+    document.getElementById('venue-label').textContent = stream ? 'サービス' : '劇場など';
+  });
+  chips.querySelectorAll('[data-s]').forEach(b => b.addEventListener('click', () => {
+    const on = !b.classList.contains('is-active');
+    chips.querySelectorAll('.kind').forEach(x => x.classList.remove('is-active'));
+    b.classList.toggle('is-active', on);
+    venue.value = on ? b.dataset.s : '';
+  }));
   document.getElementById('v-save').addEventListener('click', async () => {
     const date = document.getElementById('v-date').value.trim();
     if (recall && date && !/^\d{4}(-\d{2})?(-\d{2})?$/.test(date)) { toast('時期は 2015 や 2015-08 の形で入れてください'); return; }
     Object.assign(v, {
       date, dateNote: recall ? document.getElementById('v-datenote').value.trim() : '',
-      place: document.getElementById('v-place').value, venue: document.getElementById('v-venue').value.trim(), with: document.getElementById('v-with').value.trim(),
-      score: getScore(), peak: document.getElementById('v-peak').value.trim(), ending: document.getElementById('v-ending').value.trim(),
-      emotions: getEmo(), factors: getFac(), memo: document.getElementById('v-memo').value.trim(),
+      place: place.value, venue: venue.value.trim(), with: document.getElementById('v-with').value.trim(),
+      score: getScore(), text: document.getElementById('v-text').value.trim(),
     });
     await saveView(v);
     if (f.status !== 'seen') { f.status = 'seen'; f.seenAt = ymd(); }
     await saveFilm(f);
-    toast(editing ? '直しました' : recall ? '思い出を残しました' : '残しました。1週間後に余韻をたずねます');
+    toast(editing ? '直しました' : '記録しました');
     location.hash = `#film/${f.id}`;
   });
   const del = document.getElementById('v-del');
@@ -359,17 +338,18 @@ function renderLog(filmId, arg) {
   });
 }
 
+// 最初の版で分けて書いた欄(場面・直後の気持ち・メモ)を、感想の1欄にまとめて見せる
+function legacyText(v) {
+  return [v.peak, v.ending, v.memo].filter(Boolean).join('\n\n');
+}
+
 // ---------- 映画の詳細 ----------
 function viewHtml(v) {
-  const s = currentScore(v), d = drift(v);
-  const ag = (v.afterglow || []).filter(a => !a.skipped);
+  const s = currentScore(v);
+  const text = v.text || legacyText(v);
   return `<li class="note">
-    <div class="note__meta" style="margin:0 0 var(--space-1)"><b>${esc(dateLabel(v))}</b>${v.recall ? '<span class="tag">思い出し</span>' : ''}${v.place ? `<span>${esc(PLACE_LABEL[v.place])}${v.venue ? `(${esc(v.venue)})` : ''}</span>` : ''}${v.with ? `<span>${esc(v.with)}と</span>` : ''}${s !== null ? `<span>${s}点${d ? `(余韻で${d > 0 ? '+' : ''}${d})` : ''}</span>` : ''}<a href="#log/${esc(v.filmId)}/${esc(v.id)}" style="margin-left:auto">直す</a></div>
-    ${v.peak ? `<p class="note__quote">${esc(v.peak)}</p>` : ''}
-    ${v.ending ? `<p class="note__text">${esc(v.ending)}</p>` : ''}
-    ${(v.emotions || []).length || (v.factors || []).length ? `<div class="tags">${(v.emotions || []).map(e => `<span class="tag">${esc(EMOTION_LABEL[e])}</span>`).join('')}${(v.factors || []).map(e => `<span class="tag tag--factor">${esc(FACTOR_LABEL[e])}が効いた</span>`).join('')}</div>` : ''}
-    ${v.memo ? `<p class="note__text small" style="margin-top:var(--space-2)">${esc(v.memo)}</p>` : ''}
-    ${ag.map(a => `<p class="afterglow-log small"><span>${a.checkpoint === 7 ? '1週間後' : '3か月後'}</span>${a.vivid ? esc(VIVID_LABEL[a.vivid]) : ''}${typeof a.score === 'number' ? ` ・ ${a.score}点` : ''}${a.note ? ` ・ ${esc(a.note)}` : ''}</p>`).join('')}
+    <div class="note__meta" style="margin:0 0 var(--space-1)"><b>${esc(dateLabel(v))}</b>${v.recall ? '<span class="tag">昔観た</span>' : ''}${v.place ? `<span>${esc(v.venue || PLACE_LABEL[v.place])}${v.venue && v.place !== 'stream' ? `(${esc(PLACE_LABEL[v.place])})` : ''}</span>` : v.venue ? `<span>${esc(v.venue)}</span>` : ''}${v.with ? `<span>${esc(v.with)}と</span>` : ''}${s !== null ? `<span>${s}点</span>` : ''}<a href="#log/${esc(v.filmId)}/${esc(v.id)}" style="margin-left:auto">直す</a></div>
+    ${text ? `<p class="note__text">${esc(text)}</p>` : ''}
   </li>`;
 }
 
@@ -379,37 +359,48 @@ function renderFilm(id) {
   setTab(f.status === 'want' ? 'explore' : 'shelf');
   setTitle(f.status === 'want' ? '観たい映画' : '観た映画', { back: true });
   const vs = viewsOf(f.id);
+  const score = filmScore(f, state.views);
   const crewRows = Object.entries(f.crew || {}).filter(([, ps]) => ps.length).map(([role, ps]) =>
     `<div class="row links-row"><span class="links-row__group">${esc(tmdb.ROLES[role] ? tmdb.ROLES[role].label : role)}</span><span class="links-row__items">${ps.slice(0, 3).map(p => `<a class="btn btn--small btn--tinted" href="#person/${p.id}/${encodeURIComponent(p.name)}">${esc(p.name)}</a>`).join('')}</span></div>`).join('');
-  const castRow = (f.cast || []).length ? `<div class="row links-row"><span class="links-row__group">出演</span><span class="links-row__items">${f.cast.slice(0, 6).map(p => `<a class="btn btn--small btn--plain" href="#person/${p.id}/${encodeURIComponent(p.name)}?cast">${esc(p.name)}</a>`).join('')}</span></div>` : '';
+  const castRow = (f.cast || []).length ? `<div class="row links-row"><span class="links-row__group">出演</span><span class="links-row__items">${f.cast.slice(0, 6).map(p => `<span class="tag">${esc(p.name)}</span>`).join('')}</span></div>` : '';
   const pv = f.providers;
+  const mine = availableOn(f, state.services);
+  const groups = {};
+  for (const l of reviewLinks(f)) (groups[l.group] = groups[l.group] || []).push(l);
+  const backdrop = tmdb.posterUrl(f.backdropPath, 'w780');
   $view.innerHTML = `
-    <div class="book-head book-head--cover">${posterHtml(f, 'lg')}<div>
-      <h2>${esc(f.title)}</h2>
-      ${f.originalTitle ? `<p class="muted small">${esc(f.originalTitle)}</p>` : ''}
-      <p class="muted small">${esc([f.year, (f.directors || []).length ? `監督 ${f.directors.join('、')}` : '', f.runtime ? `${f.runtime}分` : ''].filter(Boolean).join(' ・ '))}</p>
-      ${(f.genres || []).length ? `<div class="tags">${f.genres.map(g => `<span class="tag">${esc(g)}</span>`).join('')}</div>` : ''}
-      ${filmScore(f, state.views) !== null ? `<p class="film-score">${filmScore(f, state.views)}<small>/10</small></p>` : ''}
-    </div></div>
-    <div class="actions" style="padding-top:0">
-      <a class="btn btn--prominent" href="#log/${esc(f.id)}/new">${vs.length ? 'もう一度観た' : '観た'}</a>
-      ${vs.length ? '' : `<a class="btn btn--tinted" href="#log/${esc(f.id)}/recall">昔観た</a>`}
+    <div class="hero-film${backdrop ? ' has-backdrop' : ''}">
+      ${backdrop ? `<img class="hero-film__bg" src="${esc(backdrop)}" alt="" onerror="this.remove()">` : ''}
+      <div class="hero-film__body">${posterHtml(f, 'lg')}<div>
+        <h2>${esc(f.title)}</h2>
+        ${f.originalTitle ? `<p class="small">${esc(f.originalTitle)}</p>` : ''}
+        <p class="small">${esc([f.year, (f.directors || []).length ? `監督 ${f.directors.join('、')}` : '', f.runtime ? `${f.runtime}分` : ''].filter(Boolean).join(' ・ '))}</p>
+        ${(f.genres || []).length ? `<div class="tags">${f.genres.map(g => `<span class="tag">${esc(g)}</span>`).join('')}</div>` : ''}
+        ${score !== null ? `<p class="film-score">${score}<small>/10</small></p>` : ''}
+      </div></div>
     </div>
-    ${f.status === 'want' && f.want ? `<section class="list-section"><h2 class="list-section__header">観たいと思ったきっかけ</h2>
-      <div class="card">${(f.want.reasons || []).length ? f.want.reasons.map(r => `<p class="small" style="margin:0 0 var(--space-1)">${esc(r)}</p>`).join('') : ''}
-        <textarea class="field" rows="2" id="w-reason" placeholder="誰に勧められた・何で知った(任意)"></textarea></div>
-      <div class="actions" style="padding-bottom:0"><button class="btn btn--tinted btn--small" id="w-add">きっかけを足す</button><button class="btn btn--plain btn--small" id="w-drop">観たいから外す</button></div></section>` : ''}
-    ${vs.length ? `<section class="list-section"><h2 class="list-section__header">鑑賞の記録 ${vs.length}回</h2><ul class="list list--inset">${vs.map(viewHtml).join('')}</ul></section>` : ''}
-    ${f.tmdbId ? `<section class="list-section"><h2 class="list-section__header">日本で観られるところ</h2><div class="card">
-      ${pv ? `${pv.flatrate.length ? `<p class="small" style="margin:0">見放題: <b>${pv.flatrate.map(esc).join('、')}</b></p>` : '<p class="small muted" style="margin:0">見放題の配信は見つかりません</p>'}
+    <div class="actions">
+      <a class="btn btn--prominent" href="#log/${esc(f.id)}/new">${vs.length ? 'もう一度観た' : '観た'}</a>
+      ${f.status === 'want' ? '<button class="btn btn--tinted" id="w-drop">観たいから外す</button>' : vs.length ? '' : `<a class="btn btn--tinted" href="#log/${esc(f.id)}/recall">昔観た</a>`}
+    </div>
+    ${vs.length ? `<section class="list-section"><h2 class="list-section__header">自分の感想${vs.length > 1 ? `(${vs.length}回)` : ''}</h2><ul class="list list--inset">${vs.map(viewHtml).join('')}</ul></section>` : ''}
+    ${f.tmdbId ? `<section class="list-section"><h2 class="list-section__header">配信</h2><div class="card">
+      ${pv ? `${mine.length ? `<p style="margin:0"><b>契約中で観られる: ${mine.map(esc).join('、')}</b></p>` : ''}
+        ${pv.flatrate.length ? `<p class="small" style="margin:${mine.length ? 'var(--space-1)' : '0'} 0 0">見放題: ${pv.flatrate.map(esc).join('、')}</p>` : '<p class="small muted" style="margin:0">見放題の配信は見つかりません</p>'}
         ${pv.rent.length ? `<p class="small" style="margin:var(--space-1) 0 0">レンタル: ${pv.rent.map(esc).join('、')}</p>` : ''}
-        <p class="small muted" style="margin:var(--space-1) 0 0">${esc((pv.checkedAt || '').slice(0, 10))}時点 ・ データ: JustWatch ${pv.link ? `・ <a href="${esc(pv.link)}" target="_blank" rel="noopener">詳しく</a>` : ''}</p>`
+        <p class="small muted" style="margin:var(--space-1) 0 0">${esc((pv.checkedAt || '').slice(0, 10))}時点 ・ データ: JustWatch${pv.link ? ` ・ <a href="${esc(pv.link)}" target="_blank" rel="noopener">詳しく</a>` : ''}</p>`
       : '<p class="small muted" style="margin:0">まだ確かめていません</p>'}
       </div><div class="actions" style="padding-bottom:0"><button class="btn btn--plain btn--small" id="f-refresh">${tmdb.hasKey() ? '作品情報と配信を取り直す' : '設定でTMDbのキーを入れると取れます'}</button></div></section>` : ''}
+    <section class="list-section"><h2 class="list-section__header">ほかの人の感想</h2><div class="card">
+      ${Object.entries(groups).map(([g, ls]) => `<div class="row links-row"><span class="links-row__group">${esc(g)}</span><span class="links-row__items">${ls.map(l => `<a class="btn btn--small btn--tinted" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)}</a>`).join('')}</span></div>`).join('')}
+    </div><p class="list-section__footer">Xの「話題順」は、いいねが20以上ついた投稿に絞っています。</p></section>
+    ${f.status === 'want' && f.want ? `<section class="list-section"><h2 class="list-section__header">観たいと思ったきっかけ</h2>
+      <div class="card">${(f.want.reasons || []).map(r => `<p class="small" style="margin:0 0 var(--space-1)">${esc(r)}</p>`).join('')}
+        <textarea class="field" rows="2" id="w-reason" placeholder="誰に勧められた・何で知った(任意)"></textarea></div>
+      <div class="actions" style="padding-bottom:0"><button class="btn btn--tinted btn--small" id="w-add">きっかけを足す</button></div></section>` : ''}
+    ${f.overview ? `<section class="list-section"><h2 class="list-section__header">あらすじ</h2><div class="card"><p class="summary">${esc(f.overview)}</p></div></section>` : ''}
     ${crewRows || castRow ? `<section class="list-section"><h2 class="list-section__header">作り手</h2><div class="card">${crewRows}${castRow}</div>
       <p class="list-section__footer">名前を押すと、その人が関わったほかの映画を出します。</p></section>` : ''}
-    ${f.overview ? `<section class="list-section"><h2 class="list-section__header">あらすじ</h2><div class="card"><p class="summary">${esc(f.overview)}</p></div></section>` : ''}
-    <section class="list-section"><h2 class="list-section__header">外で調べる</h2><div class="card"><div class="links-row__items">${extLinks(f).map(l => `<a class="btn btn--small btn--plain" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)}</a>`).join('')}</div></div></section>
     <div class="actions"><button class="btn btn--destructive btn--small" id="f-del">この映画を消す</button></div>`;
   const refresh = document.getElementById('f-refresh');
   if (refresh && tmdb.hasKey()) refresh.addEventListener('click', async () => { refresh.disabled = true; refresh.textContent = '取っています…'; await enrich(f, { force: true }); renderFilm(f.id); });
@@ -428,11 +419,10 @@ function renderFilm(id) {
     location.hash = '#explore';
   });
   document.getElementById('f-del').addEventListener('click', async () => {
-    if (!confirm(`『${f.title}』と、その鑑賞の記録${vs.length ? `${vs.length}件` : ''}を消しますか。`)) return;
+    if (!confirm(`『${f.title}』${vs.length ? `と、感想${vs.length}件` : ''}を消しますか。`)) return;
     await removeFilm(f);
     location.hash = '#shelf';
   });
-  // まだ詳しい情報がなければ取りにいく
   if (f.tmdbId && !f.fetchedAt && tmdb.hasKey()) enrich(f).then(() => { if (location.hash === `#film/${f.id}`) renderFilm(f.id); });
 }
 
@@ -441,19 +431,6 @@ async function removeFilm(f) {
   await db.del('films', f.id);
   state.views = state.views.filter(v => v.filmId !== f.id);
   state.films = state.films.filter(x => x.id !== f.id);
-}
-
-function extLinks(f) {
-  const q = encodeURIComponent([f.title, f.year].filter(Boolean).join(' '));
-  const qt = encodeURIComponent(f.title);
-  return [
-    { label: 'Filmarks', url: `https://filmarks.com/search/movies?q=${qt}` },
-    { label: '映画.com', url: `https://eiga.com/search/${qt}/` },
-    { label: 'Wikipedia', url: `https://ja.wikipedia.org/w/index.php?search=${encodeURIComponent(`${f.title} 映画`)}` },
-    { label: '予告編', url: `https://www.youtube.com/results?search_query=${encodeURIComponent(`${f.title} 予告`)}` },
-    { label: '感想(X)', url: `https://x.com/search?q=${q}&f=live` },
-    ...(f.tmdbId ? [{ label: 'TMDb', url: `https://www.themoviedb.org/movie/${f.tmdbId}?language=ja-JP` }] : []),
-  ];
 }
 
 // ---------- 人(監督・撮影監督など) ----------
@@ -511,11 +488,14 @@ async function personCreditsCached(personId) {
 
 // ---------- 映画棚 ----------
 const SORTS = {
-  date: { label: '観た日', key: f => (viewsOf(f.id)[0] ? dateSortKey(viewsOf(f.id)[0]) : (f.want && f.want.addedAt) || f.createdAt || '') },
+  date: { label: '観た日・足した日', key: f => (viewsOf(f.id)[0] ? dateSortKey(viewsOf(f.id)[0]) : (f.want && f.want.addedAt) || f.createdAt || '') },
   score: { label: '評価', key: f => { const s = filmScore(f, state.views); return s === null ? '' : String(s).padStart(2, '0'); } },
   year: { label: '公開年', key: f => (f.year ? String(f.year) : '') },
-  drift: { label: 'あとから効いた順', key: f => { const ds = viewsOf(f.id).map(drift).filter(d => d !== null); return ds.length ? String(100 + Math.max(...ds)).padStart(3, '0') : ''; } },
 };
+
+function gridHtml(films, sub) {
+  return `<div class="pgrid">${films.map(f => `<a class="pgrid__item" href="#film/${esc(f.id)}">${posterHtml(f, 'fill')}<span class="pgrid__title">${esc(f.title)}</span>${sub(f) ? `<span class="pgrid__sub">${sub(f)}</span>` : ''}</a>`).join('')}</div>`;
+}
 
 function renderShelf() {
   setTab('shelf');
@@ -524,6 +504,7 @@ function renderShelf() {
   const q = shelfQuery.normalize('NFKC').toLowerCase();
   const list = state.films
     .filter(f => shelfFilter === 'all' || f.status === shelfFilter)
+    .filter(f => !wantMine || shelfFilter === 'seen' || availableOn(f, state.services).length)
     .filter(f => !q || `${f.title} ${f.originalTitle || ''} ${(f.directors || []).join(' ')}`.normalize('NFKC').toLowerCase().includes(q))
     .map(f => ({ f, k: SORTS[shelfSort].key(f) }))
     .sort((a, b) => (!a.k !== !b.k ? (a.k ? -1 : 1) : b.k.localeCompare(a.k)))
@@ -535,10 +516,13 @@ function renderShelf() {
       ${filters.map(([k, l]) => `<button class="segmented__item ${k === shelfFilter ? 'is-active' : ''}" role="tab" aria-selected="${k === shelfFilter}" data-f="${k}">${l} ${counts[k]}</button>`).join('')}
     </div></div>
     <div class="sort-bar"><label for="shelf-sort">並び順</label>
-      <select id="shelf-sort">${Object.entries(SORTS).map(([k, v]) => `<option value="${k}" ${k === shelfSort ? 'selected' : ''}>${v.label}</option>`).join('')}</select></div>
+      <select id="shelf-sort">${Object.entries(SORTS).map(([k, v]) => `<option value="${k}" ${k === shelfSort ? 'selected' : ''}>${v.label}</option>`).join('')}</select>
+      ${shelfFilter !== 'seen' ? `<button class="btn btn--small ${wantMine ? 'btn--tinted' : 'btn--plain'}" id="shelf-mine" aria-pressed="${wantMine}">契約中で観られる</button>` : ''}
+      <button class="btn btn--small btn--plain" id="shelf-view" aria-label="表示を切り替える">${shelfGrid ? '一覧' : 'ポスター'}</button></div>
     <section class="list-section" style="margin-top:var(--space-3)">
-      ${list.length ? `<ul class="list list--inset">${list.slice(0, 400).map(f => filmRow(f, shelfSub(f))).join('')}</ul>`
-        : '<div class="empty"><p class="empty__message">まだありません。記録タブから追加できます。</p></div>'}
+      ${!list.length ? '<div class="empty"><p class="empty__message">まだありません。記録タブから追加できます。</p></div>'
+        : shelfGrid ? gridHtml(list.slice(0, 600), gridSub)
+        : `<ul class="list list--inset">${list.slice(0, 600).map(f => filmRow(f, shelfSub(f))).join('')}</ul>`}
     </section>`;
   const input = document.getElementById('shelf-q');
   input.addEventListener('input', () => {
@@ -551,15 +535,25 @@ function renderShelf() {
   });
   $view.querySelectorAll('[data-f]').forEach(b => b.addEventListener('click', () => { shelfFilter = b.dataset.f; renderShelf(); }));
   document.getElementById('shelf-sort').addEventListener('change', e => { shelfSort = e.target.value; db.setMeta('shelfSort', shelfSort); renderShelf(); });
+  document.getElementById('shelf-view').addEventListener('click', () => { shelfGrid = !shelfGrid; db.setMeta('shelfGrid', shelfGrid); renderShelf(); });
+  const mineBtn = document.getElementById('shelf-mine');
+  if (mineBtn) mineBtn.addEventListener('click', () => { wantMine = !wantMine; renderShelf(); });
+}
+
+function gridSub(f) {
+  if (f.status === 'want') return serviceBadges(f);
+  const s = filmScore(f, state.views);
+  return s !== null ? `<span class="score-badge">${s}</span>` : '';
 }
 
 function shelfSub(f) {
   const vs = viewsOf(f.id);
-  if (f.status === 'want') return [f.year, (f.providers && f.providers.flatrate.length) ? `見放題: ${f.providers.flatrate.slice(0, 2).join('、')}` : (f.want && f.want.reasons[0]) || ''].filter(Boolean).join(' ・ ');
+  if (f.status === 'want') {
+    const mine = availableOn(f, state.services);
+    return [f.year, mine.length ? `観られる: ${mine.join('、')}` : (f.want && f.want.reasons[0]) || ''].filter(Boolean).join(' ・ ');
+  }
   const s = filmScore(f, state.views);
-  const ds = vs.map(drift).filter(d => d !== null);
-  const d = ds.length ? Math.max(...ds) : null;
-  return [vs[0] ? dateLabel(vs[0]) : '', vs.length > 1 ? `${vs.length}回` : '', s !== null ? `${s}点` : '', d ? `余韻${d > 0 ? '+' : ''}${d}` : ''].filter(Boolean).join(' ・ ');
+  return [vs[0] ? dateLabel(vs[0]) : '', vs[0] && vs[0].venue ? vs[0].venue : '', vs.length > 1 ? `${vs.length}回` : '', s !== null ? `${s}点` : ''].filter(Boolean).join(' ・ ');
 }
 
 // ---------- 振り返り ----------
@@ -570,69 +564,52 @@ function renderLook() {
   const vs = state.views;
   if (!vs.length) {
     $view.innerHTML = `<div class="empty"><p class="empty__title">まだ振り返る記録がありません</p>
-      <p class="empty__message">観た映画や、昔観た映画を思い出して記録すると、名場面の壁、あとから効いた映画、心が動いた種類がここに並びます。</p>
-      <a class="btn btn--prominent" href="#add/recall">昔観た映画を思い出す</a></div>`;
+      <p class="empty__message">観た映画を記録すると、今年のポスターの壁、どこで観たか、年ごとのいちばんがここに並びます。</p>
+      <a class="btn btn--prominent" href="#add/seen">観た映画を記録</a></div>`;
     return;
   }
-  const yearViews = vs.filter(v => (v.date || '').startsWith(thisYear) && !v.recall);
-  const theater = yearViews.filter(v => v.place === 'theater').length;
+  const yearViews = vs.filter(v => (v.date || '').startsWith(thisYear) && !v.recall).sort((a, b) => dateSortKey(b).localeCompare(dateSortKey(a)));
+  const yearFilms = [...new Map(yearViews.map(v => [v.filmId, filmById(v.filmId)])).values()].filter(Boolean);
   const season = onThisSeason(vs);
-  const peaks = vs.filter(v => v.peak && filmById(v.filmId));
-  const wall = shuffle(peaks).slice(0, 6);
-  const { grew, faded } = driftRanking(vs, state.films);
-  const range = lookRange === 'year' ? { from: thisYear, to: `${thisYear}-12-31` } : {};
-  const prof = emotionProfile(vs, range).filter(p => p.count).sort((a, b) => b.count - a.count);
-  const max = prof.length ? prof[0].count : 1;
-  const gaps = emotionGaps(vs);
+  // どこで観たか(配信はサービスごと)
+  const where = new Map();
+  for (const v of vs.filter(x => !x.recall)) {
+    const k = v.place === 'stream' ? (v.venue || '配信(サービス不明)') : PLACE_LABEL[v.place] || '未記入';
+    where.set(k, (where.get(k) || 0) + 1);
+  }
+  const whereRows = [...where.entries()].sort((a, b) => b[1] - a[1]);
+  const max = whereRows.length ? whereRows[0][1] : 1;
   const best = bestByYear(vs, state.films);
   $view.innerHTML = `
     <div class="tiles" style="margin-top:var(--space-2)">
-      <div class="tile"><span class="tile__label">今年観た</span><span class="tile__value">${yearViews.length}<small>本</small></span><span class="tile__sub">うち映画館 ${theater}</span></div>
-      <div class="tile"><span class="tile__label">記録した映画</span><span class="tile__value">${state.films.filter(f => f.status === 'seen').length}</span><span class="tile__sub">思い出し ${vs.filter(v => v.recall).length}</span></div>
-      <div class="tile"><span class="tile__label">あとから効いた</span><span class="tile__value">${grew.length}</span><span class="tile__sub">その場かぎり ${faded.length}</span></div>
+      <div class="tile"><span class="tile__label">今年観た</span><span class="tile__value">${yearViews.length}<small>本</small></span><span class="tile__sub">うち映画館 ${yearViews.filter(v => v.place === 'theater').length}</span></div>
+      <div class="tile"><span class="tile__label">観た映画</span><span class="tile__value">${state.films.filter(f => f.status === 'seen').length}</span><span class="tile__sub">感想 ${vs.filter(v => v.text || legacyText(v)).length}件</span></div>
+      <div class="tile"><span class="tile__label">観たい</span><span class="tile__value">${state.films.filter(f => f.status === 'want').length}</span><span class="tile__sub">契約中で ${state.films.filter(f => f.status === 'want' && availableOn(f, state.services).length).length}</span></div>
     </div>
-    ${season.length ? `<section class="list-section"><h2 class="list-section__header">いつかの今ごろ観ていた</h2><ul class="list list--inset">
-      ${season.slice(0, 5).map(v => filmRow(filmById(v.filmId), `${v.date.slice(0, 4)}年 ・ ${v.peak ? v.peak.slice(0, 30) : PLACE_LABEL[v.place] || ''}`)).join('')}</ul></section>` : ''}
-    ${wall.length ? `<section class="list-section"><h2 class="list-section__header">名場面の壁</h2>
-      <div class="wall">${wall.map(v => { const f = filmById(v.filmId); return `<a class="wall__item" href="#film/${esc(f.id)}"><p>${esc(v.peak)}</p><span>${esc(f.title)}${v.date ? ` ・ ${esc(dateLabel(v))}` : ''}</span></a>`; }).join('')}</div>
-      ${peaks.length > 6 ? '<div class="actions" style="padding-bottom:0"><button class="btn btn--plain btn--small" id="wall-more">ほかの場面</button></div>' : ''}</section>` : ''}
-    ${grew.length ? `<section class="list-section"><h2 class="list-section__header">あとから効いた映画</h2><ul class="list list--inset">
-      ${grew.slice(0, 8).map(r => filmRow(r.film, `観た直後 ${r.view.score}点 → 今 ${currentScore(r.view)}点`)).join('')}</ul>
-      <p class="list-section__footer">観た直後より、時間がたってからの評価が上がった映画です。何がそうさせたのかが、あなたの好みの芯に近いかもしれません。</p></section>` : ''}
-    ${faded.length ? `<section class="list-section"><h2 class="list-section__header">その場かぎりだった映画</h2><ul class="list list--inset">
-      ${faded.slice(0, 5).map(r => filmRow(r.film, `観た直後 ${r.view.score}点 → 今 ${currentScore(r.view)}点`)).join('')}</ul></section>` : ''}
-    <section class="list-section"><h2 class="list-section__header">心が動いた種類</h2>
-      <div class="segmented-wrap"><div class="segmented" role="tablist">${[['all', '全期間'], ['year', '今年']].map(([k, l]) => `<button class="segmented__item ${k === lookRange ? 'is-active' : ''}" data-r="${k}">${l}</button>`).join('')}</div></div>
-      <div class="card">${prof.length ? prof.map(p => `<div class="bar"><span class="bar__label">${esc(p.label)}</span><span class="bar__track"><span class="bar__fill" style="width:${Math.max(4, p.count / max * 100)}%"></span></span><span class="bar__value">${p.count}</span></div>`).join('') : '<p class="small muted" style="margin:0">記録のときに「心が動いた種類」を選ぶと、ここに出ます。</p>'}</div>
-      ${gaps.length && prof.length ? `<p class="list-section__footer">しばらく味わっていない: ${gaps.slice(0, 6).map(g => esc(g.label)).join('、')}。<a href="#explore">探す</a>で、これを起こしやすい映画を提案できます。</p>` : ''}
-    </section>
-    ${best.length ? `<section class="list-section"><h2 class="list-section__header">年ごとのいちばん</h2>${best.slice(0, 6).map(y => `
+    ${yearFilms.length ? `<section class="list-section"><h2 class="list-section__header">${thisYear}年に観た映画</h2>${gridHtml(yearFilms, gridSub)}</section>` : ''}
+    ${season.length ? `<section class="list-section"><h2 class="list-section__header">いつかの今ごろ観ていた</h2>
+      ${stripHtml(season.slice(0, 10).map(v => filmById(v.filmId)).filter(Boolean), f => { const v = season.find(x => x.filmId === f.id); return `${v.date.slice(0, 4)}年`; })}</section>` : ''}
+    ${whereRows.length ? `<section class="list-section"><h2 class="list-section__header">どこで観たか</h2><div class="card">
+      ${whereRows.map(([k, n]) => `<div class="bar"><span class="bar__label">${esc(k)}</span><span class="bar__track"><span class="bar__fill" style="width:${Math.max(4, n / max * 100)}%"></span></span><span class="bar__value">${n}</span></div>`).join('')}</div></section>` : ''}
+    ${best.length ? `<section class="list-section"><h2 class="list-section__header">年ごとのいちばん</h2>${best.slice(0, 8).map(y => `
       <h3 class="form-label">${y.year}年 <span class="muted">${y.count}本</span></h3>
-      <ul class="list list--inset">${y.top.map(r => filmRow(r.film, `${r.score}点${r.view.peak ? ` ・ ${r.view.peak.slice(0, 24)}` : ''}`)).join('')}</ul>`).join('')}</section>` : ''}`;
-  const more = document.getElementById('wall-more');
-  if (more) more.addEventListener('click', () => { const y = scrollY; renderLook(); scrollTo(0, y); });
-  $view.querySelectorAll('[data-r]').forEach(b => b.addEventListener('click', () => { const y = scrollY; lookRange = b.dataset.r; renderLook(); scrollTo(0, y); }));
-}
-
-function shuffle(a) {
-  const x = a.slice();
-  for (let i = x.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [x[i], x[j]] = [x[j], x[i]]; }
-  return x;
+      ${stripHtml(y.top.map(r => r.film), f => { const r = y.top.find(x => x.film === f); return `<span class="score-badge">${r.score}</span>`; })}`).join('')}</section>` : ''}`;
 }
 
 // ---------- 探す ----------
 function renderExplore() {
   setTab('explore');
   setTitle('探す');
-  const want = state.films.filter(f => f.status === 'want').sort((a, b) => ((b.want && b.want.addedAt) || '').localeCompare((a.want && a.want.addedAt) || ''));
+  const want = wantFilms();
+  const ready = want.filter(f => availableOn(f, state.services).length);
   const { grid, unknown } = gapGrid(state.films);
   const seenCount = state.films.filter(f => f.status === 'seen').length;
   const maxCell = Math.max(1, ...REGIONS.flatMap(r => DECADES.map(d => grid[r.key][d.key])));
   $view.innerHTML = `
-    <section class="list-section" style="margin-top:var(--space-2)"><h2 class="list-section__header">観たい ${want.length}本</h2>
-      ${want.length ? `<ul class="list list--inset">${want.slice(0, 50).map(f => filmRow(f, shelfSub(f))).join('')}</ul>
-        ${tmdb.hasKey() ? '<div class="actions" style="padding-bottom:0"><button class="btn btn--plain btn--small" id="pv-all">配信状況をまとめて確かめる</button></div>' : ''}`
-        : '<div class="card"><p class="small muted" style="margin:0">下の3つの探し方で見つけた映画を「観たい」に入れると、ここに並びます。</p></div>'}
+    <section class="list-section" style="margin-top:var(--space-2)"><h2 class="list-section__header">観たい ${want.length}本${ready.length ? ` ・ 契約中で観られる ${ready.length}本` : ''}</h2>
+      ${want.length ? gridHtml(want.slice(0, 60), gridSub) + (want.length > 60 ? '<p class="list-section__footer">続きは映画棚の「観たい」で。</p>' : '')
+        + (tmdb.hasKey() ? '<div class="actions" style="padding-bottom:0"><button class="btn btn--plain btn--small" id="pv-all">配信状況をまとめて確かめる</button></div>' : '')
+        : '<div class="card"><p class="small muted" style="margin:0">「観たいを足す」や、下の3つの探し方で見つけた映画を入れると、ここにポスターで並びます。</p></div>'}
     </section>
 
     <section class="list-section"><h2 class="list-section__header">作り手の糸をたどる</h2>
@@ -650,7 +627,7 @@ function renderExplore() {
     </section>
 
     <section class="list-section"><h2 class="list-section__header">AIに選んでもらう</h2>
-      <div class="card"><p class="small" style="margin:0">${LENSES.map(([, l]) => esc(l)).join(' / ')} の4つの観点で2本ずつ。Geminiに送るのは、観た映画の題名・年・監督・評価・心が動いた種類だけで、場面やメモの文章は送りません。</p></div>
+      <div class="card"><p class="small" style="margin:0">${LENSES.map(([, l]) => esc(l)).join(' / ')} の4つの観点で2本ずつ。Geminiに送るのは、観た映画の題名・年・監督・評価だけで、感想の文章は送りません。</p></div>
       <div class="actions" style="padding-bottom:0"><button class="btn btn--tinted" id="suggest">${suggestResult ? '選び直す' : '選んでもらう'}</button></div>
       <div id="suggest-out">${suggestResult ? suggestHtml(suggestResult) : ''}</div>
     </section>
@@ -740,7 +717,7 @@ async function runSuggest() {
   if (state.films.filter(f => f.status === 'seen').length < 3) { out.innerHTML = '<p class="list-section__footer">観た映画を3本以上記録すると選べます。</p>'; return; }
   btn.disabled = true; btn.textContent = '選んでいます…';
   try {
-    const prompt = buildSuggestPrompt({ films: state.films, views: state.views, gaps: emotionGaps(state.views) });
+    const prompt = buildSuggestPrompt({ films: state.films, views: state.views });
     const text = await gemini.generateJson({ apiKey, model: model || undefined, prompt });
     let items = parseSuggest(text);
     // TMDbで照合して、ポスターとidを付ける
@@ -812,13 +789,18 @@ async function renderSettings() {
       <div class="actions"><button class="btn btn--tinted" id="t-check">保存して接続を確かめる</button></div>
       <p class="list-section__footer">題名検索・ポスター・監督や撮影監督などの作り手・日本の配信状況に使います。themoviedb.org で無料のアカウントを作り、設定 → API からキーを取ります(個人の非商用利用)。キーはこの端末にだけ保存し、書き出しファイルにも含めません。</p>
     </div></details>
+    <details class="fold"><summary>契約中の配信サービス</summary><div class="fold__body">
+      <div class="card"><textarea id="svc-list" class="field" rows="4" aria-label="契約中の配信サービス(1行に1つ)">${esc(state.services.join('\n'))}</textarea></div>
+      <div class="actions"><button class="btn btn--tinted" id="svc-save">保存</button></div>
+      <p class="list-section__footer">1行に1つ。観たい映画のうち、ここにあるサービスで見放題のものに印を付け、ホームの「今夜観られる」に出します。名前はTMDb(JustWatch)の表記に合わせます(例: Netflix、Amazon Prime Video、U-NEXT、Disney Plus、Hulu、ABEMA)。</p>
+    </div></details>
     <details class="fold"><summary>AI(Gemini)<small>${gKey ? '設定済み' : '未設定'}</small></summary><div class="fold__body">
       <div class="card">
         <div class="row"><label for="g-key">APIキー</label><input id="g-key" type="password" autocomplete="off" value="${esc(gKey)}" placeholder="Google AI Studioで取得"></div>
         <div class="row"><label for="g-model">モデル</label><input id="g-model" value="${esc(gModel)}" placeholder="${gemini.DEFAULT_MODEL}"></div>
       </div>
       <div class="actions"><button class="btn btn--tinted" id="g-save">保存</button></div>
-      <p class="list-section__footer">読書メモと同じキーを使えます。無料枠では送った内容がGoogleの製品改善に使われることがあります。送るのは「探す」で「選んでもらう」を押したときだけで、題名・年・監督・評価・感情の種類に限ります。</p>
+      <p class="list-section__footer">読書メモと同じキーを使えます。無料枠では送った内容がGoogleの製品改善に使われることがあります。送るのは「探す」で「選んでもらう」を押したときだけで、題名・年・監督・評価に限ります。</p>
     </div></details>
     <details class="fold"><summary>バックアップ</summary><div class="fold__body">
       <div class="card"><p class="small muted" style="margin:0">データはこの端末の中だけにあります。ときどき書き出して「ファイル」アプリ(iCloud Drive)に保存してください。</p>
@@ -845,6 +827,12 @@ async function renderSettings() {
     e.target.disabled = true;
     try { await tmdb.ping(); toast('TMDbにつながりました'); } catch (err) { toast(err.message, 4000); }
     e.target.disabled = false;
+  });
+  document.getElementById('svc-save').addEventListener('click', async () => {
+    const text = document.getElementById('svc-list').value;
+    await db.setMeta('services', text);
+    state.services = parseServices(text);
+    toast('保存しました');
   });
   document.getElementById('g-save').addEventListener('click', async () => {
     await db.setMeta('geminiKey', document.getElementById('g-key').value.trim());

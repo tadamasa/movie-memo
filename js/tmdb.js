@@ -48,6 +48,7 @@ export function parseResult(r) {
     originalTitle: r.original_title && r.original_title !== r.title ? r.original_title : '',
     year: year(r.release_date),
     posterPath: r.poster_path || '',
+    backdropPath: r.backdrop_path || '',
     overview: r.overview || '',
     voteCount: r.vote_count || 0,
   };

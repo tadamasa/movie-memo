@@ -1,25 +1,20 @@
 # 映画メモ
 
-観た映画を、点数よりも「いちばんの場面」と「観終わった直後の気持ち」で残し、時間がたってからの余韻と合わせて振り返る、個人用のWebアプリ(PWA)。まだ観ていない映画は、ジャンルではなく好きな映画の「作り手」と、自分の記録の「空白」から探す。
+観たか・観ていないかを、ポスター付きで管理する個人用のWebアプリ(PWA)。観た映画には日付・どこで(配信サービス)・評価・感想を残し、観たい映画には契約中の配信で今観られるかの印を付ける。ほかの人の感想(X・ブログ・Filmarksなど)へもすぐ飛べる。
 
 構成は読書メモ(github.com/tadamasa/reading-memo)と同じ。サーバーなし・運用費0円で、データはiPhoneの中(IndexedDB)にある。
-
-## 考え方
-
-- **山場と終わりを残す**: 体験をあとから思い出したときの評価は、いちばん強かった瞬間と終わりの印象でほぼ決まり、長さはあまり効かない(Fredrickson & Kahneman 1993, "Duration neglect in retrospective evaluations of affective episodes", *JPSP* 65(1), 45-55。実験の素材は映画の短い場面だった)。そこで記録の中心を「いちばんの場面」と「観終わった直後の気持ち」にした。
-- **余韻をたずねる**: 観て1週間後と3か月後に一度ずつ、「まだ鮮明か」と今の評価を聞く。観た直後より評価が上がった映画を「あとから効いた映画」として振り返りに出す。何度でも付け直せる形にしないのは、思い出すたびに記憶が組み立て直されるため(Bartlett, *Remembering*, 1932)、決まった時点で測らないと比べられないから。
-- **心が動いた種類**: ジャンルではなく「自分に何が起きたか」を選ぶ。選択肢は美的感情の尺度 AESTHEMOS(Schindler ほか 2017, *PLOS ONE* 12(6): e0178899)の下位尺度から、映画で起きやすいものを選んだ。しばらく起きていない感情は「探す」の手がかりになる。
-- **昔観た映画は思い出して記録**: 過去の記録がなくても、覚えている場面と大まかな時期(2015、2015-08、「学生時代」)だけで残せる。何年たっても残っている場面は、その映画が自分に残したものそのもの。
 
 ## 画面
 
 | タブ | できること |
 |---|---|
-| 記録 | 観た映画を記録、昔の映画を思い出して記録、観たいを足す。余韻をたずねるカード、最近の鑑賞 |
-| 映画棚 | 観た/観たい。観た日・評価・公開年・あとから効いた順で並べ替え |
-| 振り返り | 今年の本数、いつかの今ごろ観ていた映画、名場面の壁、あとから効いた/その場かぎりだった映画、心が動いた種類、年ごとのいちばん |
-| 探す | 観たいリスト(日本の配信状況つき)、作り手の糸、空白地図、AIに選んでもらう |
-| 設定 | TMDbのキー、Geminiのキー、バックアップ、映画ハブ(同期) |
+| 記録 | 観た映画を記録、観たいを足す、昔観た映画(時期は 2015 や「学生時代」でよい)。契約中の配信で今観られる観たい映画、最近観た映画、観たい映画をポスターで横に並べる |
+| 映画棚 | 観た/観たいをポスターの格子か一覧で。観た日・評価・公開年で並べ替え、観たいは「契約中で観られる」に絞れる |
+| 振り返り | 今年観た映画のポスター、いつかの今ごろ観ていた映画、どこで(どのサービスで)観たか、年ごとのいちばん |
+| 探す | 観たい(配信状況をまとめて確認)、作り手の糸、空白地図、AIに選んでもらう |
+| 設定 | TMDbのキー、契約中の配信サービス(既定: Netflix・Amazon Prime Video・U-NEXT)、Geminiのキー、バックアップ、映画ハブ(同期) |
+
+映画の詳細には、背景画像とポスター、自分の感想、日本の配信状況(JustWatch)、ほかの人の感想へのリンク(Xの話題順・新しい順、Filmarks、映画.com、はてなブログ、note、ブログ検索、YouTubeの予告編と解説、Letterboxd)、あらすじ、作り手を出す。
 
 ### 探し方
 
@@ -46,7 +41,7 @@ npm test        # Node 20以降
 | ファイル | 役割 |
 |---|---|
 | `js/app.js` | 画面とルーティング |
-| `js/core.js` | 画面に触れない計算(余韻の時期、評価の動き、感情、空白地図、作り手の糸、AIへの指示と返答の読み取り) |
+| `js/core.js` | 画面に触れない計算(配信サービスの突き合わせ、ほかの人の感想へのリンク、振り返り、空白地図、作り手の糸、AIへの指示と返答の読み取り) |
 | `js/tmdb.js` | TMDb API(検索、詳細とクレジット、日本の配信、人の作品、地域と年代での探索) |
 | `js/db.js` | IndexedDBの薄いラッパー(ストア `films` `views` `meta`) |
 | `js/sync.js`, `hub/` | 映画ハブ(自分のスプレッドシート+Apps Script)との同期 |
@@ -56,7 +51,7 @@ npm test        # Node 20以降
 
 ### データ
 
-- `films`: `{ id, tmdbId, title, originalTitle, year, directors, countries, genres, runtime, crew: { Director: [{id,name}], ... }, cast, providers, status: 'seen'|'want', want: { addedAt, reasons } }`
-- `views`: `{ id, filmId, date, dateNote, recall, place, venue, with, score, peak, ending, emotions, factors, memo, afterglow: [{ checkpoint: 7|90, at, vivid, score, note }] }`
+- `films`: `{ id, tmdbId, title, originalTitle, year, directors, countries, genres, runtime, posterPath, backdropPath, crew: { Director: [{id,name}], ... }, cast, providers: { flatrate, rent, buy, link, checkedAt }, status: 'seen'|'want', want: { addedAt, reasons } }`
+- `views`: `{ id, filmId, date, dateNote, recall, place, venue, with, score, text }`
 
 This product uses the TMDB API but is not endorsed or certified by TMDB. 配信状況のデータは JustWatch による。
