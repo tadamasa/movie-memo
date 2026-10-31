@@ -18,6 +18,9 @@ const STATUS = { want: '観たい', seen: '観た' };
 const NAMES = ['films', 'views'];
 const COLS = { films: FILM_COLS, views: VIEW_COLS };
 const PAGE = 400; // 1回の応答で返す最大件数
+// スプレッドシートの外(単独のApps Script)から動かすときに開く映画ハブ。
+// スプレッドシートの「拡張機能 → Apps Script」に貼ったときは使わない(そのスプレッドシートを使う)。
+const HUB_ID = '156oktIUuxKOcFZn0QYrx6ncY3AFiY-7DjgAIYbiRCm4';
 
 function setup() {
   const props = PropertiesService.getScriptProperties();
@@ -108,7 +111,7 @@ function cell_(obj) {
 }
 
 function sheet_(name, cols) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(HUB_ID);
   let sh = ss.getSheetByName(name);
   if (!sh) {
     sh = ss.insertSheet(name);
