@@ -161,3 +161,27 @@ test('配信: 「HBO Max on U-Next」はU-NEXTの契約で観られるとみな�
   assert.ok(!sameService('Amazon Video', 'Amazon Prime Video'));
   assert.deepEqual(availableOn({ providers: { flatrate: ['Hulu', 'HBO Max on U-Next'] } }, ['Netflix', 'U-NEXT']), ['U-NEXT']);
 });
+
+import { seenSummary } from '../js/core.js';
+
+test('観た日: 映画ごとに最後に観た日と回数を出す(粗い時期は年の半ばとして比べる)', () => {
+  const views = [{ filmId: 'f', date: '2015' }, { filmId: 'f', date: '2026-10-31' }, { filmId: 'f', date: '2020-01-02' }, { filmId: 'g', date: '2026-07-01' }];
+  assert.deepEqual(seenSummary('f', views), { lastSeen: '2026-10-31', count: 3 });
+  assert.deepEqual(seenSummary('x', views), { lastSeen: '', count: 0 });
+  assert.equal(seenSummary('f', [{ filmId: 'f', date: '2015' }, { filmId: 'f', date: '' }]).lastSeen, '2015');
+});
+
+test('ハブ: 列を足す前のシートを見出しの名前で移し、json から観た日・回数・カテゴリを埋める', () => {
+  const film = { id: 'f1', title: 'DUNE', year: 2021, directors: ['ヴィルヌーヴ'], status: 'seen', tmdbId: 438631, lastSeen: '2026-10-31', seenCount: 1, category: 'SF・ファンタジー' };
+  const hub = loadHub({ films: [
+    ['id', 'rev', 'mtime', 'deleted', 'title', 'year', 'directors', 'status', 'tmdbId', 'json'],
+    ['f1', '3', '100', 'false', 'DUNE', '2021', 'ヴィルヌーヴ', '観た', '438631', JSON.stringify(film)],
+  ] });
+  const rows = hub.sheets.get('films').rows;
+  assert.deepEqual(rows[0].slice(0, 13), ['id', 'rev', 'mtime', 'deleted', 'title', 'year', 'directors', 'status', 'lastSeen', 'seenCount', 'category', 'tmdbId', 'json']);
+  assert.deepEqual(rows[1].slice(0, 12), ['f1', '3', '100', 'false', 'DUNE', '2021', 'ヴィルヌーヴ', '観た', '2026-10-31', '1', 'SF・ファンタジー', '438631']);
+  // rev は変えないので、since=3 からは何も返らない
+  const r = hub.post({ token: hub.token, since: 3 });
+  assert.equal(r.films.length, 0);
+  assert.equal(JSON.parse(rows[1][12]).title, 'DUNE');
+});

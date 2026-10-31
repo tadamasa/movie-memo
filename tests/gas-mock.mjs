@@ -2,11 +2,11 @@
 import fs from 'fs';
 import vm from 'vm';
 
-export function loadHub() {
+export function loadHub(seed = {}) {
   const sheets = new Map();
   const props = {};
   const makeSheet = name => {
-    const sh = { name, rows: [], maxRows: 1000, frozen: 0 };
+    const sh = { name, rows: [], maxRows: 1000, maxCols: 26, frozen: 0 };
     const range = (r, c, nr = 1, nc = 1) => {
       if (r + nr - 1 > sh.maxRows) throw new Error(`範囲外 ${r + nr - 1} > ${sh.maxRows}`);
       return {
@@ -19,6 +19,9 @@ export function loadHub() {
     sh.api = {
       getRange: range,
       getLastRow: () => sh.rows.length,
+      getLastColumn: () => sh.rows.reduce((m, r) => Math.max(m, r.reduce((k, x, i) => (x !== '' && x !== undefined ? i + 1 : k), 0)), 0),
+      getMaxColumns: () => sh.maxCols,
+      insertColumnsAfter: (_, n) => { sh.maxCols += n; },
       getMaxRows: () => sh.maxRows,
       insertRowsAfter: (_, n) => { sh.maxRows += n; },
       setFrozenRows: n => { sh.frozen = n; },
@@ -34,6 +37,8 @@ export function loadHub() {
     Utilities: { getUuid: () => '1234-5678-abcd' },
     Logger: { log() {} },
   };
+  // 前からあるシート(列を変える前の形など)を置いてから動かす
+  for (const [name, rows] of Object.entries(seed)) { makeSheet(name); sheets.get(name).rows = rows.map(r => r.slice()); }
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(new URL('../hub/Code.gs', import.meta.url), 'utf8'), ctx);
   ctx.setup();

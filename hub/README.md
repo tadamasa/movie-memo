@@ -34,7 +34,7 @@ Code.gs を貼り替えて保存したら、「デプロイ」→「デプロイ
 
 | シート | 主な列 |
 |---|---|
-| films | id, title(題名), year(公開年), directors(監督), status(観た/観たい), tmdbId |
+| films | id, title(題名), year(公開年), directors(監督), status(観た/観たい), lastSeen(最後に観た日 yyyy-mm-dd。覚えていない映画は 2015 などの時期), seenCount(観た回数), category(カテゴリ), tmdbId |
 | views | id, date(観た日。昔観た映画では 2015 や 2015-08 のこともある), filmId, filmTitle, place(stream/theater/tv/disc/other), venue(配信サービスや劇場), score(10点満点), text(感想) |
 
 - `deleted` が `true` の行は削除済みです。読むときは飛ばしてください。

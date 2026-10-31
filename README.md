@@ -51,7 +51,7 @@ npm test        # Node 20以降
 
 ### データ
 
-- `films`: `{ id, tmdbId, title, originalTitle, year, directors, countries, genres, runtime, posterPath, backdropPath, crew: { Director: [{id,name}], ... }, cast, providers: { flatrate, rent, buy, link, checkedAt }, status: 'seen'|'want', category, categoryAuto, want: { addedAt, reasons } }`
+- `films`: `{ id, tmdbId, title, originalTitle, year, directors, countries, genres, runtime, posterPath, backdropPath, crew: { Director: [{id,name}], ... }, cast, providers: { flatrate, rent, buy, link, checkedAt }, status: 'seen'|'want', category, categoryAuto, lastSeen, seenCount, want: { addedAt, reasons } }`
 - `views`: `{ id, filmId, date, dateNote, recall, place, venue, with, score, text }`
 
 This product uses the TMDB API but is not endorsed or certified by TMDB. 配信状況のデータは JustWatch による。

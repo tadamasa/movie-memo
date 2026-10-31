@@ -7,7 +7,7 @@ import {
   PLACES, PLACE_LABEL, DEFAULT_SERVICES, availableOn, parseServices, sameService,
   ymd, dateLabel, dateSortKey, currentScore, filmScore, onThisSeason, bestByYear, REGIONS, DECADES, gapGrid,
   pickThreadSeeds, weaveThreads, LENSES, buildSuggestPrompt, parseSuggest, findFilm, reviewLinks,
-  DEFAULT_CATEGORIES, parseCategories, genreToCategory,
+  DEFAULT_CATEGORIES, parseCategories, genreToCategory, seenSummary,
 } from './core.js';
 
 // ---------- 状態 ----------
@@ -285,22 +285,27 @@ function renderLog(filmId, arg) {
   if (!f) { location.hash = '#home'; return; }
   const editing = arg && arg !== 'new' && arg !== 'recall' ? state.views.find(v => v.id === arg) : null;
   const recall = editing ? !!editing.recall : arg === 'recall';
-  const v = editing || { id: db.uid(), filmId, recall, date: recall ? '' : ymd(), place: recall ? '' : 'stream' };
+  const v = editing || { id: db.uid(), filmId, recall: false, date: recall ? '' : ymd(), place: recall ? '' : 'stream' };
+  // 日付は原則として日まで。覚えていないときだけ「2015」「2015-08」や「学生時代」で残す
+  const fullDay = /^\d{4}-\d{2}-\d{2}$/.test(v.date || '');
+  const rough = !!editing && !fullDay;
   setTab('home');
   setTitle(editing ? '鑑賞を直す' : recall ? '昔観た映画' : '観た映画を記録', { back: true });
   const services = [...new Set([...state.services, ...(v.venue && v.place === 'stream' ? [v.venue] : [])])];
   $view.innerHTML = `
     <div class="book-head book-head--cover">${posterHtml(f, 'md')}<div><h2>${esc(f.title)}</h2><p class="muted small">${esc(filmMeta(f))}</p></div></div>
     <div class="card">
-      ${recall
-        ? `<div class="row"><label for="v-date">時期</label><input id="v-date" placeholder="例 2015 / 2015-08(任意)" value="${esc(v.date)}" inputmode="numeric"></div>
-           <div class="row"><label for="v-datenote">ことば</label><input id="v-datenote" placeholder="例 学生時代(任意)" value="${esc(v.dateNote || '')}"></div>`
-        : `<div class="row"><label for="v-date">観た日</label><input id="v-date" type="date" value="${esc(v.date)}"></div>`}
+      <div class="row" id="day-row" ${rough ? 'hidden' : ''}><label for="v-date">観た日</label><input id="v-date" type="date" value="${esc(fullDay ? v.date : '')}" max="${ymd()}"></div>
+      <div id="rough-rows" ${rough ? '' : 'hidden'}>
+        <div class="row"><label for="v-period">時期</label><input id="v-period" placeholder="例 2015 / 2015-08" value="${esc(fullDay ? '' : v.date)}" inputmode="numeric"></div>
+        <div class="row"><label for="v-datenote">ことば</label><input id="v-datenote" placeholder="例 学生時代(任意)" value="${esc(v.dateNote || '')}"></div>
+      </div>
       <div class="row"><label for="v-place">どこで</label><select id="v-place"><option value="">-</option>${PLACES.map(([k, l]) => `<option value="${k}" ${v.place === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="row" id="svc-row"><label for="v-venue" id="venue-label">${v.place === 'stream' ? 'サービス' : '劇場など'}</label><input id="v-venue" value="${esc(v.venue || '')}" placeholder="任意"></div>
       <div class="row"><label for="v-with">誰と</label><input id="v-with" value="${esc(v.with || '')}" placeholder="任意"></div>
       ${scoreRow('v-score', v.score)}
     </div>
+    <div class="actions" style="padding:var(--space-1) var(--space-4) 0"><button type="button" class="btn btn--plain btn--small" id="rough-toggle">${rough ? '日付で入れる' : '日付を覚えていない'}</button></div>
     <div class="kinds" id="svc-chips" ${v.place === 'stream' ? '' : 'hidden'}>${services.map(s => `<button type="button" class="kind ${v.venue === s ? 'is-active' : ''}" data-s="${esc(s)}">${esc(s)}</button>`).join('')}</div>
     <h3 class="form-label">感想</h3>
     <div class="card"><textarea class="field field--note" id="v-text" placeholder="思ったこと、好きな場面、誰かに話したいこと。音声はキーボードのマイクで">${esc(v.text || legacyText(v))}</textarea></div>
@@ -320,16 +325,33 @@ function renderLog(filmId, arg) {
     b.classList.toggle('is-active', on);
     venue.value = on ? b.dataset.s : '';
   }));
+  let roughMode = rough;
+  const dayInput = document.getElementById('v-date');
+  document.getElementById('rough-toggle').addEventListener('click', e => {
+    roughMode = !roughMode;
+    document.getElementById('day-row').hidden = roughMode;
+    document.getElementById('rough-rows').hidden = !roughMode;
+    e.target.textContent = roughMode ? '日付で入れる' : '日付を覚えていない';
+  });
   document.getElementById('v-save').addEventListener('click', async () => {
-    const date = document.getElementById('v-date').value.trim();
-    if (recall && date && !/^\d{4}(-\d{2})?(-\d{2})?$/.test(date)) { toast('時期は 2015 や 2015-08 の形で入れてください'); return; }
+    let date, dateNote = '';
+    if (roughMode) {
+      date = document.getElementById('v-period').value.trim();
+      dateNote = document.getElementById('v-datenote').value.trim();
+      if (date && !/^\d{4}(-\d{2})?$/.test(date)) { toast('時期は 2015 や 2015-08 の形で入れてください'); return; }
+      if (!date && !dateNote) { toast('時期かことばのどちらかを入れてください'); return; }
+    } else {
+      date = dayInput.value.trim();
+      if (!date) { toast('観た日を選んでください'); dayInput.focus(); return; }
+    }
     Object.assign(v, {
-      date, dateNote: recall ? document.getElementById('v-datenote').value.trim() : '',
+      date, dateNote, recall: roughMode,
       place: place.value, venue: venue.value.trim(), with: document.getElementById('v-with').value.trim(),
       score: getScore(), text: document.getElementById('v-text').value.trim(),
     });
     await saveView(v);
-    if (f.status !== 'seen') { f.status = 'seen'; f.seenAt = ymd(); }
+    f.status = 'seen';
+    stampSeen(f);
     await saveFilm(f);
     toast(editing ? '直しました' : '記録しました');
     location.hash = `#film/${f.id}`;
@@ -339,8 +361,18 @@ function renderLog(filmId, arg) {
     if (!confirm('この鑑賞の記録を消しますか。')) return;
     await db.del('views', v.id);
     state.views = state.views.filter(x => x.id !== v.id);
+    stampSeen(f);
+    await saveFilm(f);
     location.hash = `#film/${f.id}`;
   });
+}
+
+// 映画に「最後に観た日」「観た回数」を持たせる(ハブの films シートに列として出す)
+function stampSeen(f) {
+  const s = seenSummary(f.id, state.views);
+  f.lastSeen = s.lastSeen;
+  f.seenCount = s.count;
+  return f;
 }
 
 // 最初の版で分けて書いた欄(場面・直後の気持ち・メモ)を、感想の1欄にまとめて見せる
@@ -944,6 +976,11 @@ async function onRemoteChange() {
   if (!(matchMedia('(display-mode: standalone)').matches || navigator.standalone)) document.getElementById('tab-warning').hidden = false;
   route();
   await sync.initSync({ onRemoteChange });
+  // 観た日の列を足す前に記録した映画にも、最後に観た日と回数を入れる(変わったものだけ保存して同期する)
+  for (const f of state.films.filter(x => x.status === 'seen')) {
+    const s = seenSummary(f.id, state.views);
+    if (f.lastSeen !== s.lastSeen || f.seenCount !== s.count) await saveFilm(stampSeen(f));
+  }
   sync.schedule(300);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') sync.schedule(300); });
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

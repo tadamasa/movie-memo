@@ -293,3 +293,12 @@ export function genreToCategory(genres, categories = DEFAULT_CATEGORIES) {
   for (const [re, cat] of GENRE_RULES) if (re.test(text) && categories.includes(cat)) return cat;
   return '';
 }
+
+// ---------- 観た日 ----------
+// 映画ごとの最後に観た日(いちばん新しい鑑賞の日付。「2015」のような粗い時期もそのまま)と、観た回数
+export function seenSummary(filmId, views) {
+  const vs = views.filter(v => v.filmId === filmId);
+  let last = '';
+  for (const v of vs) if (v.date && fullDate(v.date) > fullDate(last)) last = v.date;
+  return { lastSeen: last, count: vs.length };
+}

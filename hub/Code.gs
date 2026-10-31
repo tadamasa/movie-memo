@@ -12,7 +12,7 @@
  * 最後の列 json がアプリの元データ。人が表を書き換えても、アプリには反映されない(json が正)。
  */
 
-const FILM_COLS = ['id', 'rev', 'mtime', 'deleted', 'title', 'year', 'directors', 'status', 'tmdbId', 'json'];
+const FILM_COLS = ['id', 'rev', 'mtime', 'deleted', 'title', 'year', 'directors', 'status', 'lastSeen', 'seenCount', 'category', 'tmdbId', 'json'];
 const VIEW_COLS = ['id', 'rev', 'mtime', 'deleted', 'date', 'filmId', 'filmTitle', 'place', 'venue', 'score', 'text', 'json'];
 const STATUS = { want: '観たい', seen: '観た' };
 const NAMES = ['films', 'views'];
@@ -92,7 +92,7 @@ function doPost(e) {
 function filmRow_(item, rev) {
   const f = item.data || {};
   return [item.id, String(rev), String(Number(item.mtime || 0)), String(!!item.deleted), f.title || '', f.year ? String(f.year) : '', (f.directors || []).join('、'),
-    STATUS[f.status] || f.status || '', f.tmdbId ? String(f.tmdbId) : '', item.deleted ? '' : cell_(f)];
+    STATUS[f.status] || f.status || '', f.lastSeen || '', f.seenCount ? String(f.seenCount) : '', f.category || '', f.tmdbId ? String(f.tmdbId) : '', item.deleted ? '' : cell_(f)];
 }
 
 function viewRow_(item, rev, titles) {
@@ -119,8 +119,33 @@ function sheet_(name, cols) {
     sh.getRange(1, 1, sh.getMaxRows(), cols.length).setNumberFormat('@');
     sh.getRange(1, 1, 1, cols.length).setValues([cols]).setFontWeight('bold');
     sh.setFrozenRows(1);
+  } else {
+    migrate_(sh, name, cols);
   }
   return sh;
+}
+
+// 列が増えたとき(例: films に lastSeen・seenCount・category を足した)、見出しの名前で今の行を新しい並びに移す。
+// films の読みやすい列は json から作り直す。rev は変えないので、端末に送り返されることはない。
+function migrate_(sh, name, cols) {
+  const width = Math.max(sh.getLastColumn(), 1);
+  const head = sh.getRange(1, 1, 1, width).getValues()[0].map(String);
+  if (head.slice(0, cols.length).join(',') === cols.join(',') && width <= cols.length) return;
+  const n = sh.getLastRow() - 1;
+  const old = n > 0 ? sh.getRange(2, 1, n, width).getValues() : [];
+  const at = {};
+  head.forEach((h, i) => { at[h] = i; });
+  let rows = old.map(r => cols.map(c => (at[c] === undefined ? '' : r[at[c]])));
+  if (name === 'films') {
+    const j = cols.length - 1;
+    rows = rows.map(r => (r[j] ? filmRow_({ id: r[0], mtime: r[2], deleted: String(r[3]) === 'true', data: parse_(r[j]) }, r[1]) : r));
+  }
+  const w = Math.max(width, cols.length);
+  if (sh.getMaxColumns && sh.getMaxColumns() < w) sh.insertColumnsAfter(sh.getMaxColumns(), w - sh.getMaxColumns());
+  sh.getRange(1, 1, sh.getMaxRows(), w).setNumberFormat('@');
+  const pad = r => r.concat(Array(w - r.length).fill(''));
+  sh.getRange(1, 1, 1, w).setValues([pad(cols)]).setFontWeight('bold');
+  if (rows.length) sh.getRange(2, 1, rows.length, w).setValues(rows.map(pad));
 }
 
 function parse_(s) { try { return JSON.parse(s); } catch (e) { return null; } }
