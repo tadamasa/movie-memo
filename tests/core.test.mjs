@@ -141,3 +141,23 @@ test('ハブ: 映画と鑑賞を受け取り、表に読みやすい列で書き
   assert.deepEqual(hub.moviesOn('2026-10-31').map(m => m.title), ['映画A']);
   assert.equal(hub.post({ token: 'x', since: 0 }).error, 'unauthorized');
 });
+
+import { genreToCategory, parseCategories, DEFAULT_CATEGORIES } from '../js/core.js';
+
+test('カテゴリ: TMDbのジャンルから優先順に1つ選び、一覧にないものは選ばない', () => {
+  assert.equal(genreToCategory(['サイエンスフィクション', 'アドベンチャー']), 'SF・ファンタジー');
+  assert.equal(genreToCategory(['アニメーション', 'ファンタジー']), 'アニメ');
+  assert.equal(genreToCategory(['ドラマ', '戦争']), '歴史・戦争');
+  assert.equal(genreToCategory(['Drama', 'Crime']), 'サスペンス・ミステリー');
+  assert.equal(genreToCategory(['ドラマ']), 'ドラマ');
+  assert.equal(genreToCategory([]), '');
+  assert.equal(genreToCategory(['ホラー'], ['ドラマ']), '');
+  assert.deepEqual(parseCategories('邦画\n洋画\n邦画\n'), ['邦画', '洋画']);
+  assert.deepEqual(parseCategories(''), DEFAULT_CATEGORIES);
+});
+
+test('配信: 「HBO Max on U-Next」はU-NEXTの契約で観られるとみなし、Amazonのレンタル店はPrimeとみなさない', () => {
+  assert.ok(sameService('HBO Max on U-Next', 'U-NEXT'));
+  assert.ok(!sameService('Amazon Video', 'Amazon Prime Video'));
+  assert.deepEqual(availableOn({ providers: { flatrate: ['Hulu', 'HBO Max on U-Next'] } }, ['Netflix', 'U-NEXT']), ['U-NEXT']);
+});

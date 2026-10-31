@@ -9,12 +9,12 @@
 | タブ | できること |
 |---|---|
 | 記録 | 観た映画を記録、観たいを足す、昔観た映画(時期は 2015 や「学生時代」でよい)。契約中の配信で今観られる観たい映画、最近観た映画、観たい映画をポスターで横に並べる |
-| 映画棚 | 観た/観たいをポスターの格子か一覧で。観た日・評価・公開年で並べ替え、観たいは「契約中で観られる」に絞れる |
-| 振り返り | 今年観た映画のポスター、いつかの今ごろ観ていた映画、どこで(どのサービスで)観たか、年ごとのいちばん |
+| 映画棚 | 観た/観たいをポスターの格子か一覧で。観た日・評価・公開年で並べ替え、カテゴリと「契約中のみ」で絞れる |
+| 振り返り | 今年観た映画のポスター、いつかの今ごろ観ていた映画、どこで(どのサービスで)観たか、カテゴリ別の本数、年ごとのいちばん |
 | 探す | 観たい(配信状況をまとめて確認)、作り手の糸、空白地図、AIに選んでもらう |
-| 設定 | TMDbのキー、契約中の配信サービス(既定: Netflix・Amazon Prime Video・U-NEXT)、Geminiのキー、バックアップ、映画ハブ(同期) |
+| 設定 | TMDbのキー、カテゴリの一覧(1行に1つ、未分類にジャンルからまとめて付ける)、契約中の配信サービス(既定: Netflix・Amazon Prime Video・U-NEXT)、Geminiのキー、バックアップ、映画ハブ(同期) |
 
-映画の詳細には、背景画像とポスター、自分の感想、日本の配信状況(JustWatch)、ほかの人の感想へのリンク(Xの話題順・新しい順、Filmarks、映画.com、はてなブログ、note、ブログ検索、YouTubeの予告編と解説、Letterboxd)、あらすじ、作り手を出す。
+映画の詳細には、背景画像とポスター、カテゴリ(1本に1つ。TMDbのジャンルから自動で付け、選び直せる)、自分の感想、日本の配信状況(JustWatch)、ほかの人の感想へのリンク(Xの話題順・新しい順、Filmarks、映画.com、はてなブログ、note、ブログ検索、YouTubeの予告編と解説、Letterboxd)、あらすじ、作り手を出す。
 
 ### 探し方
 
@@ -51,7 +51,7 @@ npm test        # Node 20以降
 
 ### データ
 
-- `films`: `{ id, tmdbId, title, originalTitle, year, directors, countries, genres, runtime, posterPath, backdropPath, crew: { Director: [{id,name}], ... }, cast, providers: { flatrate, rent, buy, link, checkedAt }, status: 'seen'|'want', want: { addedAt, reasons } }`
+- `films`: `{ id, tmdbId, title, originalTitle, year, directors, countries, genres, runtime, posterPath, backdropPath, crew: { Director: [{id,name}], ... }, cast, providers: { flatrate, rent, buy, link, checkedAt }, status: 'seen'|'want', category, categoryAuto, want: { addedAt, reasons } }`
 - `views`: `{ id, filmId, date, dateNote, recall, place, venue, with, score, text }`
 
 This product uses the TMDB API but is not endorsed or certified by TMDB. 配信状況のデータは JustWatch による。

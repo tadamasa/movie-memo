@@ -10,7 +10,10 @@ const normSvc = s => String(s || '').normalize('NFKC').toLowerCase().replace(/[\
 // 「Netflix Standard with Ads」や「Amazon Prime Video with Ads」も同じサービスとみなす
 export function sameService(a, b) {
   const x = normSvc(a), y = normSvc(b);
-  return !!x && !!y && (x === y || x.startsWith(y) || y.startsWith(x));
+  if (!x || !y) return false;
+  if (x === y || x.startsWith(y) || y.startsWith(x)) return true;
+  // 「HBO Max on U-Next」のように、契約中のサービスの中のチャンネル
+  return x.endsWith(`on${y}`) || y.endsWith(`on${x}`);
 }
 // その映画を、自分の契約で見放題で観られるサービス
 export function availableOn(film, services = DEFAULT_SERVICES) {
@@ -257,4 +260,36 @@ export function reviewLinks(f) {
   if (orig) links.push({ group: '海外', label: 'Letterboxd', url: `https://letterboxd.com/search/films/${enc(orig)}/` });
   links.push({ group: '海外', label: 'Wikipedia', url: `https://ja.wikipedia.org/w/index.php?search=${enc(`${t} 映画`)}` });
   return links;
+}
+
+// ---------- カテゴリ ----------
+// 1本に1つ。一覧は設定で編集できる。TMDbのジャンル(日本語・英語どちらの名前でも)から最初の候補を決める
+export const DEFAULT_CATEGORIES = [
+  'ドラマ', 'コメディ', 'アクション・冒険', 'SF・ファンタジー', 'サスペンス・ミステリー', 'ホラー',
+  '恋愛', 'アニメ', 'ドキュメンタリー', '歴史・戦争', '音楽・ミュージカル', '家族・青春',
+];
+export function parseCategories(text) {
+  const list = String(text || '').split('\n').map(x => x.trim()).filter(Boolean);
+  return list.length ? [...new Set(list)] : DEFAULT_CATEGORIES.slice();
+}
+// 上にあるものほど優先する(アニメのSFは「アニメ」、戦争ドラマは「歴史・戦争」)
+const GENRE_RULES = [
+  [/アニメ|animation/i, 'アニメ'],
+  [/ドキュメンタリー|documentary/i, 'ドキュメンタリー'],
+  [/ホラー|horror/i, 'ホラー'],
+  [/サイエンス|SF|ファンタジー|science|fantasy/i, 'SF・ファンタジー'],
+  [/戦争|歴史|西部|履歴|war|history|western/i, '歴史・戦争'],
+  [/音楽|ミュージカル|music/i, '音楽・ミュージカル'],
+  [/犯罪|スリラー|ミステリー|謎|サスペンス|crime|thriller|mystery/i, 'サスペンス・ミステリー'],
+  [/ロマンス|恋愛|romance/i, '恋愛'],
+  [/アクション|アドベンチャー|冒険|action|adventure/i, 'アクション・冒険'],
+  [/コメディ|comedy/i, 'コメディ'],
+  [/ファミリー|family/i, '家族・青春'],
+  [/ドラマ|drama/i, 'ドラマ'],
+];
+export function genreToCategory(genres, categories = DEFAULT_CATEGORIES) {
+  const text = (genres || []).join(' ');
+  if (!text) return '';
+  for (const [re, cat] of GENRE_RULES) if (re.test(text) && categories.includes(cat)) return cat;
+  return '';
 }

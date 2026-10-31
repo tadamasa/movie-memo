@@ -7,14 +7,16 @@ import {
   PLACES, PLACE_LABEL, DEFAULT_SERVICES, availableOn, parseServices, sameService,
   ymd, dateLabel, dateSortKey, currentScore, filmScore, onThisSeason, bestByYear, REGIONS, DECADES, gapGrid,
   pickThreadSeeds, weaveThreads, LENSES, buildSuggestPrompt, parseSuggest, findFilm, reviewLinks,
+  DEFAULT_CATEGORIES, parseCategories, genreToCategory,
 } from './core.js';
 
 // ---------- 状態 ----------
-const state = { films: [], views: [], services: DEFAULT_SERVICES.slice() };
+const state = { films: [], views: [], services: DEFAULT_SERVICES.slice(), categories: DEFAULT_CATEGORIES.slice() };
 let shelfFilter = 'seen';
 let shelfSort = 'date';
 let shelfQuery = '';
 let shelfGrid = true;
+let shelfCat = ''; // ''=すべて、'-'=未分類
 let wantMine = false; // 観たいを「契約中の配信で観られる」だけにする
 let addMode = 'seen';
 let threadResult = null; // 作り手の糸の最後の結果(画面を移っても残す)
@@ -65,6 +67,7 @@ async function load() {
   if (!SORTS[shelfSort]) shelfSort = 'date';
   shelfGrid = (await db.getMeta('shelfGrid', true)) !== false;
   state.services = parseServices(await db.getMeta('services', ''));
+  state.categories = parseCategories(await db.getMeta('categories', ''));
 }
 
 async function saveFilm(f) {
@@ -150,6 +153,8 @@ async function enrich(f, { force = false } = {}) {
   try {
     const d = await tmdb.detail(f.tmdbId);
     Object.assign(f, d, { id: f.id, status: f.status, want: f.want, title: f.titleEdited ? f.title : d.title });
+    // カテゴリがまだなければ、ジャンルから付ける(あとで詳細画面で直せる)
+    if (!f.category) { const c = genreToCategory(f.genres, state.categories); if (c) { f.category = c; f.categoryAuto = true; } }
     await saveFilm(f);
   } catch (e) { console.warn(e); }
   return f;
@@ -383,6 +388,8 @@ function renderFilm(id) {
       <a class="btn btn--prominent" href="#log/${esc(f.id)}/new">${vs.length ? 'もう一度観た' : '観た'}</a>
       ${f.status === 'want' ? '<button class="btn btn--tinted" id="w-drop">観たいから外す</button>' : vs.length ? '' : `<a class="btn btn--tinted" href="#log/${esc(f.id)}/recall">昔観た</a>`}
     </div>
+    <div class="card"><div class="row"><label for="f-cat">カテゴリ</label><select id="f-cat"><option value="">未分類</option>${[...new Set([...state.categories, ...(f.category ? [f.category] : [])])].map(c => `<option ${c === f.category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div></div>
+    ${f.categoryAuto && f.category ? '<p class="list-section__footer" style="margin-top:var(--space-1)">ジャンルから自動で付けました。違っていたら選び直してください。</p>' : ''}
     ${vs.length ? `<section class="list-section"><h2 class="list-section__header">自分の感想${vs.length > 1 ? `(${vs.length}回)` : ''}</h2><ul class="list list--inset">${vs.map(viewHtml).join('')}</ul></section>` : ''}
     ${f.tmdbId ? `<section class="list-section"><h2 class="list-section__header">配信</h2><div class="card">
       ${pv ? `${mine.length ? `<p style="margin:0"><b>契約中で観られる: ${mine.map(esc).join('、')}</b></p>` : ''}
@@ -402,6 +409,12 @@ function renderFilm(id) {
     ${crewRows || castRow ? `<section class="list-section"><h2 class="list-section__header">作り手</h2><div class="card">${crewRows}${castRow}</div>
       <p class="list-section__footer">名前を押すと、その人が関わったほかの映画を出します。</p></section>` : ''}
     <div class="actions"><button class="btn btn--destructive btn--small" id="f-del">この映画を消す</button></div>`;
+  document.getElementById('f-cat').addEventListener('change', async e => {
+    f.category = e.target.value;
+    f.categoryAuto = false;
+    await saveFilm(f);
+    toast(f.category ? `「${f.category}」にしました` : '未分類にしました');
+  });
   const refresh = document.getElementById('f-refresh');
   if (refresh && tmdb.hasKey()) refresh.addEventListener('click', async () => { refresh.disabled = true; refresh.textContent = '取っています…'; await enrich(f, { force: true }); renderFilm(f.id); });
   const wAdd = document.getElementById('w-add');
@@ -505,6 +518,7 @@ function renderShelf() {
   const list = state.films
     .filter(f => shelfFilter === 'all' || f.status === shelfFilter)
     .filter(f => !wantMine || shelfFilter === 'seen' || availableOn(f, state.services).length)
+    .filter(f => !shelfCat || (shelfCat === '-' ? !f.category : f.category === shelfCat))
     .filter(f => !q || `${f.title} ${f.originalTitle || ''} ${(f.directors || []).join(' ')}`.normalize('NFKC').toLowerCase().includes(q))
     .map(f => ({ f, k: SORTS[shelfSort].key(f) }))
     .sort((a, b) => (!a.k !== !b.k ? (a.k ? -1 : 1) : b.k.localeCompare(a.k)))
@@ -517,8 +531,10 @@ function renderShelf() {
     </div></div>
     <div class="sort-bar"><label for="shelf-sort">並び順</label>
       <select id="shelf-sort">${Object.entries(SORTS).map(([k, v]) => `<option value="${k}" ${k === shelfSort ? 'selected' : ''}>${v.label}</option>`).join('')}</select>
-      ${shelfFilter !== 'seen' ? `<button class="btn btn--small ${wantMine ? 'btn--tinted' : 'btn--plain'}" id="shelf-mine" aria-pressed="${wantMine}">契約中で観られる</button>` : ''}
       <button class="btn btn--small btn--plain" id="shelf-view" aria-label="表示を切り替える">${shelfGrid ? '一覧' : 'ポスター'}</button></div>
+    <div class="sort-bar" style="padding-top:0"><label for="shelf-cat">カテゴリ</label>
+      <select id="shelf-cat"><option value="">すべて</option>${state.categories.map(c => `<option ${c === shelfCat ? 'selected' : ''}>${esc(c)}</option>`).join('')}<option value="-" ${shelfCat === '-' ? 'selected' : ''}>未分類</option></select>
+      ${shelfFilter !== 'seen' ? `<button class="btn btn--small ${wantMine ? 'btn--tinted' : 'btn--plain'}" id="shelf-mine" aria-pressed="${wantMine}">契約中のみ</button>` : ''}</div>
     <section class="list-section" style="margin-top:var(--space-3)">
       ${!list.length ? '<div class="empty"><p class="empty__message">まだありません。記録タブから追加できます。</p></div>'
         : shelfGrid ? gridHtml(list.slice(0, 600), gridSub)
@@ -535,6 +551,7 @@ function renderShelf() {
   });
   $view.querySelectorAll('[data-f]').forEach(b => b.addEventListener('click', () => { shelfFilter = b.dataset.f; renderShelf(); }));
   document.getElementById('shelf-sort').addEventListener('change', e => { shelfSort = e.target.value; db.setMeta('shelfSort', shelfSort); renderShelf(); });
+  document.getElementById('shelf-cat').addEventListener('change', e => { shelfCat = e.target.value; renderShelf(); });
   document.getElementById('shelf-view').addEventListener('click', () => { shelfGrid = !shelfGrid; db.setMeta('shelfGrid', shelfGrid); renderShelf(); });
   const mineBtn = document.getElementById('shelf-mine');
   if (mineBtn) mineBtn.addEventListener('click', () => { wantMine = !wantMine; renderShelf(); });
@@ -553,7 +570,7 @@ function shelfSub(f) {
     return [f.year, mine.length ? `観られる: ${mine.join('、')}` : (f.want && f.want.reasons[0]) || ''].filter(Boolean).join(' ・ ');
   }
   const s = filmScore(f, state.views);
-  return [vs[0] ? dateLabel(vs[0]) : '', vs[0] && vs[0].venue ? vs[0].venue : '', vs.length > 1 ? `${vs.length}回` : '', s !== null ? `${s}点` : ''].filter(Boolean).join(' ・ ');
+  return [f.category, vs[0] ? dateLabel(vs[0]) : '', vs[0] && vs[0].venue ? vs[0].venue : '', vs.length > 1 ? `${vs.length}回` : '', s !== null ? `${s}点` : ''].filter(Boolean).join(' ・ ');
 }
 
 // ---------- 振り返り ----------
@@ -580,6 +597,10 @@ function renderLook() {
   const whereRows = [...where.entries()].sort((a, b) => b[1] - a[1]);
   const max = whereRows.length ? whereRows[0][1] : 1;
   const best = bestByYear(vs, state.films);
+  const catCount = new Map();
+  for (const f of state.films.filter(x => x.status === 'seen')) { const k = f.category || '未分類'; catCount.set(k, (catCount.get(k) || 0) + 1); }
+  const catRows = [...catCount.entries()].sort((a, b) => b[1] - a[1]);
+  const catMax = catRows.length ? catRows[0][1] : 1;
   $view.innerHTML = `
     <div class="tiles" style="margin-top:var(--space-2)">
       <div class="tile"><span class="tile__label">今年観た</span><span class="tile__value">${yearViews.length}<small>本</small></span><span class="tile__sub">うち映画館 ${yearViews.filter(v => v.place === 'theater').length}</span></div>
@@ -591,6 +612,8 @@ function renderLook() {
       ${stripHtml(season.slice(0, 10).map(v => filmById(v.filmId)).filter(Boolean), f => { const v = season.find(x => x.filmId === f.id); return `${v.date.slice(0, 4)}年`; })}</section>` : ''}
     ${whereRows.length ? `<section class="list-section"><h2 class="list-section__header">どこで観たか</h2><div class="card">
       ${whereRows.map(([k, n]) => `<div class="bar"><span class="bar__label">${esc(k)}</span><span class="bar__track"><span class="bar__fill" style="width:${Math.max(4, n / max * 100)}%"></span></span><span class="bar__value">${n}</span></div>`).join('')}</div></section>` : ''}
+    ${catRows.length ? `<section class="list-section"><h2 class="list-section__header">カテゴリ別</h2><div class="card">
+      ${catRows.map(([k, n]) => `<div class="bar"><span class="bar__label">${esc(k)}</span><span class="bar__track"><span class="bar__fill bar__fill--alt" style="width:${Math.max(4, n / catMax * 100)}%"></span></span><span class="bar__value">${n}</span></div>`).join('')}</div></section>` : ''}
     ${best.length ? `<section class="list-section"><h2 class="list-section__header">年ごとのいちばん</h2>${best.slice(0, 8).map(y => `
       <h3 class="form-label">${y.year}年 <span class="muted">${y.count}本</span></h3>
       ${stripHtml(y.top.map(r => r.film), f => { const r = y.top.find(x => x.film === f); return `<span class="score-badge">${r.score}</span>`; })}`).join('')}</section>` : ''}`;
@@ -789,6 +812,14 @@ async function renderSettings() {
       <div class="actions"><button class="btn btn--tinted" id="t-check">保存して接続を確かめる</button></div>
       <p class="list-section__footer">題名検索・ポスター・監督や撮影監督などの作り手・日本の配信状況に使います。themoviedb.org で無料のアカウントを作り、設定 → API からキーを取ります(個人の非商用利用)。キーはこの端末にだけ保存し、書き出しファイルにも含めません。</p>
     </div></details>
+    <details class="fold"><summary>カテゴリ</summary><div class="fold__body">
+      <div class="card"><textarea id="cat-list" class="field" rows="8" aria-label="カテゴリの一覧(1行に1つ)">${esc(state.categories.join('\n'))}</textarea></div>
+      <div class="actions"><button class="btn btn--tinted" id="cat-save">保存</button></div>
+      <p class="list-section__footer">1行に1つ。並び順がそのまま選択肢の順になります。名前を変えても、すでに付けた映画のカテゴリは変わりません。</p>
+      <div class="card"><p class="small" style="margin:0">未分類 <b>${state.films.filter(f => !f.category).length}</b>本</p></div>
+      <div class="actions"><button class="btn btn--tinted" id="cat-auto">未分類の映画にジャンルから付ける</button></div>
+      <p class="list-section__footer">TMDbのジャンル(SF、アニメーションなど)から、一覧にあるカテゴリを選んで付けます。ジャンルがまだ取れていない映画は、先にTMDbから取ります。</p>
+    </div></details>
     <details class="fold"><summary>契約中の配信サービス</summary><div class="fold__body">
       <div class="card"><textarea id="svc-list" class="field" rows="4" aria-label="契約中の配信サービス(1行に1つ)">${esc(state.services.join('\n'))}</textarea></div>
       <div class="actions"><button class="btn btn--tinted" id="svc-save">保存</button></div>
@@ -827,6 +858,26 @@ async function renderSettings() {
     e.target.disabled = true;
     try { await tmdb.ping(); toast('TMDbにつながりました'); } catch (err) { toast(err.message, 4000); }
     e.target.disabled = false;
+  });
+  document.getElementById('cat-save').addEventListener('click', async () => {
+    const text = document.getElementById('cat-list').value;
+    await db.setMeta('categories', text);
+    state.categories = parseCategories(text);
+    toast('保存しました');
+  });
+  document.getElementById('cat-auto').addEventListener('click', async e => {
+    const btn = e.target;
+    btn.disabled = true;
+    let n = 0;
+    const left = state.films.filter(f => !f.category);
+    for (const [i, f] of left.entries()) {
+      btn.textContent = `分類しています… ${i + 1}/${left.length}`;
+      if (!(f.genres || []).length && f.tmdbId && tmdb.hasKey()) await enrich(f, { force: true });
+      if (!f.category) { const c = genreToCategory(f.genres, state.categories); if (c) { f.category = c; f.categoryAuto = true; await saveFilm(f); } }
+      if (f.category) n++;
+    }
+    toast(`${n}本に付けました${left.length - n ? `(${left.length - n}本は付けられませんでした)` : ''}`, 4000);
+    renderSettings().then(() => { const d = [...document.querySelectorAll('details')].find(x => x.querySelector('#cat-list')); if (d) d.open = true; });
   });
   document.getElementById('svc-save').addEventListener('click', async () => {
     const text = document.getElementById('svc-list').value;

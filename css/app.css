@@ -386,3 +386,5 @@ a.tag { text-decoration: none; }
 .hero-film .cover--lg { box-shadow: 0 4px 16px rgba(0,0,0,.3); }
 .links-row__group { width: 4.8em; }
 #svc-chips { padding-top: var(--space-2); }
+.bar__fill--alt { background-color: var(--viz-3); }
+.sort-bar label, .sort-bar .btn { white-space: nowrap; }
