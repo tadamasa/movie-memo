@@ -2,7 +2,7 @@
 import * as db from './db.js';
 
 // キーと、端末ごとの同期の状態は書き出さない
-const SECRET_KEYS = new Set(['geminiKey', 'tmdbKey', 'syncUrl', 'syncToken', 'syncCursor', 'syncDirty', 'syncLastAt']);
+const SECRET_KEYS = new Set(['geminiKey', 'tmdbKey', 'syncUrl', 'syncToken', 'syncCursor', 'syncDirty', 'syncLastAt', 'diaryImport']);
 
 export async function exportData() {
   const [films, views, meta] = await Promise.all([db.getAll('films'), db.getAll('views'), db.getAll('meta')]);

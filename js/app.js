@@ -3,6 +3,7 @@ import * as tmdb from './tmdb.js';
 import * as gemini from './gemini.js';
 import * as sync from './sync.js';
 import { exportData, importData } from './backup.js';
+import { readDiaryCsv, planImport, rankCandidates, mergeImport } from './diaryimport.js';
 import {
   PLACES, PLACE_LABEL, DEFAULT_SERVICES, availableOn, parseServices, sameService,
   ymd, dateLabel, dateSortKey, currentScore, filmScore, onThisSeason, bestByYear, REGIONS, DECADES, gapGrid,
@@ -872,6 +873,10 @@ async function renderSettings() {
       ${!standalone ? '<p class="list-section__footer">Safariの共有ボタンから「ホーム画面に追加」してから使ってください。追加しないと、しばらく開かないうちにデータが消えることがあります。</p>' : ''}
       <p class="list-section__footer">保存領域の保護: ${persisted ? '有効' : '未許可'}</p>
     </div></details>
+    <details class="fold"><summary>日記の記録を取り込む</summary><div class="fold__body">
+      <div class="actions"><label class="btn btn--tinted">CSVを選ぶ<input type="file" id="diary-csv" accept="text/csv,.csv,text/plain" hidden></label>${(await db.getMeta('diaryImport')) ? '<a class="btn btn--plain" href="#import">続きから</a>' : ''}</div>
+      <p class="list-section__footer">「日付,映画名,視聴媒体,備考」の列があるCSVを読み、TMDbで作品を照合してから観た映画として取り込みます。「途中まで」の行は取り込まず、鑑賞が終わった日(「続き」の日)だけを記録します。同じ日の鑑賞がすでにあれば足さないので、2回取り込んでも増えません。</p>
+    </div></details>
     <details class="fold" id="sync-fold"><summary>映画ハブ(同期)<small id="sync-sum"></small></summary><div class="fold__body">
       <div class="card">
         <div class="row"><label for="s-url">URL</label><input id="s-url" type="url" autocomplete="off" value="${esc(syncUrl)}" placeholder="https://script.google.com/macros/s/…/exec"></div>
@@ -930,7 +935,117 @@ async function renderSettings() {
     if (!file) return;
     try { const n = await importData(await file.text()); await load(); toast(`${n}件を読み込みました`); } catch (err) { toast(err.message, 4000); }
   });
+  document.getElementById('diary-csv').addEventListener('change', async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const plan = planImport(readDiaryCsv(await file.text()));
+      if (!plan.films.length) { toast('取り込める行がありませんでした'); return; }
+      await db.setMeta('diaryImport', { plan, matches: {}, at: new Date().toISOString() });
+      location.hash = '#import';
+    } catch (err) { toast(err.message, 4000); }
+  });
   bindSyncSettings();
+}
+
+// ---------- 日記の記録を取り込む ----------
+let importFilter = 'check';
+async function renderImport() {
+  setTab('settings');
+  setTitle('日記の記録を取り込む', { back: true });
+  const draft = await db.getMeta('diaryImport');
+  if (!draft) { $view.innerHTML = '<p class="list-section__footer">設定の「日記の記録を取り込む」からCSVを選んでください。</p>'; return; }
+  const { plan, matches } = draft;
+  const save = () => db.setMeta('diaryImport', draft);
+  const chosen = p => { const m = matches[p.key]; return m && m.choice; };
+  const pending = plan.films.filter(p => !matches[p.key]);
+  const unsure = plan.films.filter(p => matches[p.key] && !matches[p.key].sure);
+  const shown = importFilter === 'check' ? plan.films.filter(p => !matches[p.key] || !matches[p.key].sure) : plan.films;
+  const dates = p => p.views.map(v => v.date.replace(/-/g, '/')).join('、');
+  const row = p => {
+    const m = matches[p.key];
+    const c = m && m.choice && m.choice.tmdb;
+    const opts = m ? m.list.map((r, i) => `<option value="${i}" ${c && c.tmdbId === r.tmdbId ? 'selected' : ''}>${esc(r.title)}${r.year ? `(${r.year})` : ''}${r.originalTitle ? ` ${esc(r.originalTitle)}` : ''}</option>`).join('') : '';
+    const sel = m && m.choice ? (m.choice.skip ? 'skip' : m.choice.plain ? 'plain' : '') : '';
+    return `<li class="list__row" style="align-items:flex-start">${posterHtml(c || { title: p.title })}
+      <div class="list__text" style="min-width:0"><span class="list__title">${esc(p.title)}${m && !m.sure ? ' <span class="tag">確かめる</span>' : ''}</span>
+        <span class="list__subtitle">${esc(dates(p))}${p.aliases.length ? ` ・ 別名 ${esc(p.aliases.join('、'))}` : ''}${p.hints.length ? ` ・ ${esc(p.hints.join('、'))}` : ''}</span>
+        <select class="field" data-k="${esc(p.key)}" style="margin-top:var(--space-1);width:100%" aria-label="『${esc(p.title)}』の作品">
+          ${m ? '' : '<option value="">まだ照合していません</option>'}${opts}
+          <option value="plain" ${sel === 'plain' ? 'selected' : ''}>照合しない(題名だけで記録)</option>
+          <option value="skip" ${sel === 'skip' ? 'selected' : ''}>取り込まない</option>
+        </select></div></li>`;
+  };
+  $view.innerHTML = `
+    <div class="card"><p style="margin:0">映画 <b>${plan.films.length}</b>本 ・ 鑑賞 <b>${plan.viewCount}</b>回</p>
+      <p class="small muted" style="margin:var(--space-1) 0 0">照合済み ${plan.films.length - pending.length}本 ・ 確かめたいもの ${unsure.length}本${pending.length ? ` ・ 未照合 ${pending.length}本` : ''}</p></div>
+    ${plan.skipped.length ? `<details class="fold"><summary>取り込まない行<small>${plan.skipped.length}行</small></summary><div class="fold__body"><ul class="list list--inset">${plan.skipped.map(x => `<li class="list__row"><div class="list__text"><span class="list__title">${esc(x.title)}</span><span class="list__subtitle">${esc(x.date)} ・ ${esc(x.reason)}</span></div></li>`).join('')}</ul></div></details>` : ''}
+    <div class="actions">${pending.length ? (tmdb.hasKey() ? `<button class="btn btn--prominent" id="imp-match">TMDbで照合する(${pending.length}本)</button>` : '<p class="list-section__footer">設定でTMDbのキーを入れると、ポスターや監督付きで取り込めます。キーなしでも「照合しない」で題名だけ取り込めます。</p>') : ''}</div>
+    <div class="segmented-wrap"><div class="segmented" role="tablist">
+      <button class="segmented__item ${importFilter === 'check' ? 'is-active' : ''}" data-f="check">確かめる ${pending.length + unsure.length}</button>
+      <button class="segmented__item ${importFilter === 'all' ? 'is-active' : ''}" data-f="all">すべて ${plan.films.length}</button>
+    </div></div>
+    <section class="list-section"><ul class="list list--inset" id="imp-list">${shown.map(row).join('') || '<li class="list__row"><div class="list__text"><span class="list__subtitle">確かめるものはありません</span></div></li>'}</ul>
+      <p class="list-section__footer">同じ題名の作品が複数あるもの、題名に「新作」などが付いているものは、候補から選び直してください。選んだものは確かめた扱いになります。</p></section>
+    <div class="actions"><button class="btn btn--prominent" id="imp-go">取り込む</button><button class="btn btn--plain" id="imp-cancel">やめる</button></div>`;
+  $view.querySelectorAll('[data-f]').forEach(b => b.addEventListener('click', () => { importFilter = b.dataset.f; renderImport(); }));
+  $view.querySelectorAll('select[data-k]').forEach(el => el.addEventListener('change', async () => {
+    const k = el.dataset.k;
+    const m = matches[k] || (matches[k] = { list: [], sure: false });
+    m.choice = el.value === 'skip' ? { skip: true } : el.value === 'plain' || el.value === '' ? { plain: true } : { tmdb: m.list[Number(el.value)] };
+    m.sure = true;
+    await save();
+    const p = plan.films.find(x => x.key === k);
+    const li = el.closest('li');
+    const c = m.choice.tmdb;
+    li.querySelector('.cover').outerHTML = posterHtml(c || { title: p.title });
+    const tag = li.querySelector('.tag');
+    if (tag) tag.remove();
+  }));
+  const matchBtn = document.getElementById('imp-match');
+  if (matchBtn) matchBtn.addEventListener('click', async () => {
+    matchBtn.disabled = true;
+    for (const [i, p] of pending.entries()) {
+      matchBtn.textContent = `照合しています… ${i + 1}/${pending.length}`;
+      let results = [];
+      try {
+        for (const q of p.queries) { results = await tmdb.search(q); if (results.length) break; }
+      } catch (e) { toast(e.message, 4000); break; }
+      const r = rankCandidates(results, p);
+      const list = r.list.slice(0, 6);
+      // すでに映画メモにある映画なら、それを選ぶ
+      const mine = list.find(x => findFilm(state.films, x));
+      const pick = mine && findFilm(state.films, mine).status === 'seen' ? mine : list[0];
+      matches[p.key] = { list, sure: r.sure || (!!mine && pick === mine), choice: pick ? { tmdb: pick } : { plain: true } };
+      if (i % 5 === 4) await save();
+    }
+    await save();
+    renderImport();
+  });
+  document.getElementById('imp-cancel').addEventListener('click', async () => {
+    if (!confirm('取り込みをやめますか。照合した内容は消えます。')) return;
+    await db.setMeta('diaryImport', null);
+    location.hash = '#settings';
+  });
+  document.getElementById('imp-go').addEventListener('click', async e => {
+    const left = plan.films.filter(p => !matches[p.key]).length;
+    if (left && !confirm(`${left}本はまだ照合していません。題名だけで取り込みますか。`)) return;
+    if (!left && unsure.length && !confirm(`確かめていないものが${unsure.length}本あります。いまの候補のまま取り込みますか。`)) return;
+    const btn = e.target;
+    btn.disabled = true;
+    const items = plan.films.map(p => ({ plan: p, choice: chosen(p) || { plain: true } }));
+    const out = mergeImport(items, state.films, state.views, { uid: db.uid, findFilm });
+    for (const v of out.views) await saveView(v);
+    for (const f of out.films) await saveFilm(f);
+    await db.setMeta('diaryImport', null);
+    sync.schedule(300);
+    const n = out.count;
+    toast(`${n.films}本(新しく${n.filmsNew}本)、鑑賞${n.views}回を取り込みました${n.upgraded ? `。${n.upgraded}回は日付を詳しくしました` : ''}${n.same ? `。${n.same}回はすでにありました` : ''}`, 6000);
+    location.hash = '#shelf';
+    // ジャンル・監督・カテゴリを後ろで取る
+    for (const f of out.films) { if (f.tmdbId && !f.fetchedAt) await enrich(f); }
+    sync.schedule(300);
+  });
 }
 
 // ---------- ルーティング ----------
@@ -947,6 +1062,7 @@ async function route() {
     case 'look': return renderLook();
     case 'explore': return renderExplore();
     case 'settings': return renderSettings();
+    case 'import': return renderImport();
     default: return renderHome();
   }
 }
@@ -967,7 +1083,7 @@ async function onRemoteChange() {
   const el = document.activeElement;
   const typing = el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName);
   const drafting = [...document.querySelectorAll('textarea')].some(t => t.value.trim());
-  if (!typing && !drafting && !/^#(settings|log)/.test(location.hash)) { const y = scrollY; await route(); scrollTo(0, y); }
+  if (!typing && !drafting && !/^#(settings|log|import)/.test(location.hash)) { const y = scrollY; await route(); scrollTo(0, y); }
 }
 
 (async function start() {

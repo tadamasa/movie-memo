@@ -1,12 +1,12 @@
 // アプリ本体をキャッシュして、電波がなくても開けるようにする。
 // 作品情報(TMDb)やAIなど外部APIはキャッシュしない。
-const VERSION = 'v4';
+const VERSION = 'v5';
 const PREFIX = 'movie-memo-';
 const CACHE = `${PREFIX}${VERSION}`;
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest',
   'css/hig-tokens.css', 'css/hig-components.css', 'css/app.css',
-  'js/app.js', 'js/db.js', 'js/core.js', 'js/tmdb.js', 'js/gemini.js', 'js/backup.js', 'js/sync.js',
+  'js/app.js', 'js/db.js', 'js/core.js', 'js/tmdb.js', 'js/gemini.js', 'js/backup.js', 'js/sync.js', 'js/diaryimport.js',
   'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',
 ];
 
