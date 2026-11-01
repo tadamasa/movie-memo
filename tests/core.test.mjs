@@ -185,3 +185,21 @@ test('ハブ: 列を足す前のシートを見出しの名前で移し、json �
   assert.equal(r.films.length, 0);
   assert.equal(JSON.parse(rows[1][12]).title, 'DUNE');
 });
+
+test('観るペース: 年×月に数え、粗い日付は除き、間隔と長い空白を出す', async () => {
+  const { paceStats } = await import('../js/core.js');
+  const views = [{ date: '2025-01-05' }, { date: '2025-01-20' }, { date: '2025-03-01' }, { date: '2026-10-31' }, { date: '2015' }];
+  const p = paceStats(views, '2026-11-01');
+  assert.equal(p.count, 4);
+  assert.deepEqual(p.years.map(r => r.year), [2026, 2025]);
+  assert.equal(p.years[1].months[0], 2);
+  assert.equal(p.max, 2);
+  assert.equal(p.longest.from, '2025-03-01');
+  assert.equal(p.longest.to, '2026-10-31');
+  assert.equal(p.median, 40);
+  assert.equal(p.last12, 1);
+  assert.equal(p.prev12, 3);
+  assert.equal(p.weekday[0], 1); // 2025-01-05 が日曜
+  assert.equal(p.weekday[6], 2); // 2025-03-01 と 2026-10-31 が土曜
+  assert.equal(paceStats([{ date: '2015' }]), null);
+});

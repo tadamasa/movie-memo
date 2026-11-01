@@ -302,3 +302,34 @@ export function seenSummary(filmId, views) {
   for (const v of vs) if (v.date && fullDate(v.date) > fullDate(last)) last = v.date;
   return { lastSeen: last, count: vs.length };
 }
+
+// ---------- 観るペース ----------
+// 日まで分かる鑑賞だけを数える(「2015」「学生時代」のような粗い時期は月に置けない)
+export function paceStats(views, today = ymd()) {
+  const days = views.map(v => v.date || '').filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+  if (!days.length) return null;
+  const y0 = Number(days[0].slice(0, 4)), y1 = Number(today.slice(0, 4));
+  const years = [];
+  for (let y = y1; y >= y0; y--) years.push({ year: y, months: Array(12).fill(0), total: 0 });
+  const monthTotals = Array(12).fill(0), weekday = Array(7).fill(0);
+  for (const d of days) {
+    const y = years.find(r => r.year === Number(d.slice(0, 4)));
+    const m = Number(d.slice(5, 7)) - 1;
+    if (y) { y.months[m]++; y.total++; }
+    monthTotals[m]++;
+    weekday[new Date(`${d}T12:00:00Z`).getUTCDay()]++;
+  }
+  const max = Math.max(...years.flatMap(r => r.months));
+  // 初めの記録の月から今月までを分母にした月平均
+  const span = (y1 - y0) * 12 + Number(today.slice(5, 7)) - Number(days[0].slice(5, 7)) + 1;
+  const gaps = [];
+  for (let i = 1; i < days.length; i++) gaps.push({ days: daysBetween(days[i - 1], days[i]), from: days[i - 1], to: days[i] });
+  gaps.push({ days: daysBetween(days[days.length - 1], today), from: days[days.length - 1], to: '', open: true });
+  const sorted = gaps.filter(g => !g.open).map(g => g.days).sort((a, b) => a - b);
+  const median = sorted.length ? sorted[Math.floor((sorted.length - 1) / 2)] : null;
+  const longest = gaps.reduce((a, b) => (b.days > a.days ? b : a));
+  const back = n => { const t = new Date(`${today}T12:00:00Z`); t.setUTCFullYear(t.getUTCFullYear() - n); return t.toISOString().slice(0, 10); };
+  const last12 = days.filter(d => d > back(1) && d <= today).length;
+  const prev12 = days.filter(d => d > back(2) && d <= back(1)).length;
+  return { years, max, monthTotals, weekday, perMonth: days.length / Math.max(1, span), count: days.length, median, longest, last12, prev12, first: days[0] };
+}

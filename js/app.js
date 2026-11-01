@@ -8,7 +8,7 @@ import {
   PLACES, PLACE_LABEL, DEFAULT_SERVICES, availableOn, parseServices, sameService,
   ymd, dateLabel, dateSortKey, currentScore, filmScore, onThisSeason, bestByYear, REGIONS, DECADES, gapGrid,
   pickThreadSeeds, weaveThreads, LENSES, buildSuggestPrompt, parseSuggest, findFilm, reviewLinks,
-  DEFAULT_CATEGORIES, parseCategories, genreToCategory, seenSummary,
+  DEFAULT_CATEGORIES, parseCategories, genreToCategory, seenSummary, paceStats,
 } from './core.js';
 
 // ---------- 状態 ----------
@@ -634,6 +634,7 @@ function renderLook() {
   for (const f of state.films.filter(x => x.status === 'seen')) { const k = f.category || '未分類'; catCount.set(k, (catCount.get(k) || 0) + 1); }
   const catRows = [...catCount.entries()].sort((a, b) => b[1] - a[1]);
   const catMax = catRows.length ? catRows[0][1] : 1;
+  const pace = paceStats(vs);
   $view.innerHTML = `
     <div class="tiles" style="margin-top:var(--space-2)">
       <div class="tile"><span class="tile__label">今年観た</span><span class="tile__value">${yearViews.length}<small>本</small></span><span class="tile__sub">うち映画館 ${yearViews.filter(v => v.place === 'theater').length}</span></div>
@@ -643,6 +644,7 @@ function renderLook() {
     ${yearFilms.length ? `<section class="list-section"><h2 class="list-section__header">${thisYear}年に観た映画</h2>${gridHtml(yearFilms, gridSub)}</section>` : ''}
     ${season.length ? `<section class="list-section"><h2 class="list-section__header">いつかの今ごろ観ていた</h2>
       ${stripHtml(season.slice(0, 10).map(v => filmById(v.filmId)).filter(Boolean), f => { const v = season.find(x => x.filmId === f.id); return `${v.date.slice(0, 4)}年`; })}</section>` : ''}
+    ${paceHtml(pace)}
     ${whereRows.length ? `<section class="list-section"><h2 class="list-section__header">どこで観たか</h2><div class="card">
       ${whereRows.map(([k, n]) => `<div class="bar"><span class="bar__label">${esc(k)}</span><span class="bar__track"><span class="bar__fill" style="width:${Math.max(4, n / max * 100)}%"></span></span><span class="bar__value">${n}</span></div>`).join('')}</div></section>` : ''}
     ${catRows.length ? `<section class="list-section"><h2 class="list-section__header">カテゴリ別</h2><div class="card">
@@ -650,6 +652,50 @@ function renderLook() {
     ${best.length ? `<section class="list-section"><h2 class="list-section__header">年ごとのいちばん</h2>${best.slice(0, 8).map(y => `
       <h3 class="form-label">${y.year}年 <span class="muted">${y.count}本</span></h3>
       ${stripHtml(y.top.map(r => r.film), f => { const r = y.top.find(x => x.film === f); return `<span class="score-badge">${r.score}</span>`; })}`).join('')}</section>` : ''}`;
+  bindPace();
+}
+
+// 観るペース: 年×月の濃淡表。マスを押すと、その月に観た映画を下に出す
+const WEEK = ['日', '月', '火', '水', '木', '金', '土'];
+function paceHtml(p) {
+  if (!p) return '';
+  const thisMonth = ymd().slice(0, 7);
+  const cell = (y, m, n) => {
+    const key = `${y}-${String(m + 1).padStart(2, '0')}`;
+    if (key > thisMonth || key < p.first.slice(0, 7)) return '<td></td>';
+    return `<td><button class="gap__cell pace__cell" style="--a:${n ? 0.15 + 0.85 * n / p.max : 0}" data-ym="${key}" aria-label="${y}年${m + 1}月 ${n}本">${n || ''}</button></td>`;
+  };
+  const trend = p.prev12 ? Math.round((p.last12 - p.prev12) / p.prev12 * 100) : null;
+  const lg = p.longest;
+  const barRows = (labels, counts, cls = '') => { const mx = Math.max(1, ...counts); return labels.map((l, i) => `<div class="bar"><span class="bar__label">${l}</span><span class="bar__track"><span class="bar__fill ${cls}" style="width:${counts[i] ? Math.max(4, counts[i] / mx * 100) : 0}%"></span></span><span class="bar__value">${counts[i]}</span></div>`).join(''); };
+  return `<section class="list-section"><h2 class="list-section__header">観るペース</h2>
+    <div class="tiles">
+      <div class="tile"><span class="tile__label">ひと月に</span><span class="tile__value">${p.perMonth.toFixed(1)}<small>本</small></span><span class="tile__sub">${esc(p.first.slice(0, 7).replace('-', '/'))}から平均</span></div>
+      <div class="tile"><span class="tile__label">この1年</span><span class="tile__value">${p.last12}<small>本</small></span><span class="tile__sub">${trend === null ? '前の1年は記録なし' : trend === 0 ? '前の1年と同じ' : `前の1年比 ${trend > 0 ? '+' : '−'}${Math.abs(trend)}%`}</span></div>
+      <div class="tile"><span class="tile__label">間隔</span><span class="tile__value">${p.median ?? '—'}<small>日</small></span><span class="tile__sub">真ん中の値</span></div>
+    </div>
+    <div class="card gap-card"><table class="gap pace"><thead><tr><th></th>${Array.from({ length: 12 }, (_, i) => `<th>${i + 1}</th>`).join('')}<th>計</th></tr></thead>
+      <tbody>${p.years.map(r => `<tr><th>${r.year}</th>${r.months.map((n, m) => cell(r.year, m, n)).join('')}<td class="pace__total">${r.total}</td></tr>`).join('')}</tbody></table>
+      <p class="small muted" id="pace-detail" style="margin:var(--space-2) 0 0">マスを押すと、その月に観た映画を出します。濃いほど多く観た月です。</p>
+      <div id="pace-films"></div></div>
+    <p class="list-section__footer">いちばん長く空いたのは${lg.open ? `いまで、${esc(lg.from.replace(/-/g, '/'))}から${lg.days}日` : `${esc(lg.from.replace(/-/g, '/'))}から${esc(lg.to.replace(/-/g, '/'))}までの${lg.days}日`}。日付が「2015」のように粗い記録は数えていません(日まで分かる${p.count}回)。</p>
+    <details class="fold"><summary>何月に多いか・何曜日に多いか</summary><div class="fold__body">
+      <div class="card">${barRows(Array.from({ length: 12 }, (_, i) => `${i + 1}月`), p.monthTotals)}</div>
+      <div class="card" style="margin-top:var(--space-2)">${barRows(WEEK.map(w => `${w}曜`), p.weekday, 'bar__fill--alt')}</div>
+    </div></details></section>`;
+}
+function bindPace() {
+  const detail = document.getElementById('pace-detail');
+  if (!detail) return;
+  $view.querySelectorAll('.pace__cell').forEach(b => b.addEventListener('click', () => {
+    $view.querySelectorAll('.pace__cell.is-on').forEach(x => x.classList.remove('is-on'));
+    b.classList.add('is-on');
+    const ym = b.dataset.ym;
+    const vs = state.views.filter(v => (v.date || '').startsWith(ym) && /^\d{4}-\d{2}-\d{2}$/.test(v.date)).sort((a, c) => a.date.localeCompare(c.date));
+    detail.textContent = `${ym.replace('-', '年')}月 ${vs.length}本`.replace('年0', '年');
+    const films = vs.map(v => filmById(v.filmId)).filter(Boolean);
+    document.getElementById('pace-films').innerHTML = films.length ? stripHtml(films, f => { const v = vs.find(x => x.filmId === f.id); return `${Number(v.date.slice(8))}日`; }) : '';
+  }));
 }
 
 // ---------- 探す ----------

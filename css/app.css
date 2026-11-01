@@ -388,3 +388,11 @@ a.tag { text-decoration: none; }
 #svc-chips { padding-top: var(--space-2); }
 .bar__fill--alt { background-color: var(--viz-3); }
 .sort-bar label, .sort-bar .btn { white-space: nowrap; }
+
+/* 観るペース(年×月の濃淡表) */
+.pace { border-spacing: 2px; min-width: 0; table-layout: fixed; }
+.pace thead th:first-child, .pace tbody th { width: 2.6em; }
+.pace thead th:last-child { width: 2em; }
+.pace__cell { min-width: 0; height: 26px; border-radius: 4px; font-size: 11px; padding: 0; }
+.pace__cell.is-on { outline: 2px solid var(--color-label); }
+.pace__total { text-align: right; font-variant-numeric: tabular-nums; color: var(--color-label-secondary); padding-left: 2px; }

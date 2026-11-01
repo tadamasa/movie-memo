@@ -1,6 +1,6 @@
 // アプリ本体をキャッシュして、電波がなくても開けるようにする。
 // 作品情報(TMDb)やAIなど外部APIはキャッシュしない。
-const VERSION = 'v5';
+const VERSION = 'v6';
 const PREFIX = 'movie-memo-';
 const CACHE = `${PREFIX}${VERSION}`;
 const SHELL = [
