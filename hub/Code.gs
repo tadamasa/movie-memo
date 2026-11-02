@@ -10,6 +10,10 @@
  *
  * シート「films」「views」は、ほかのApps Script(日記アプリなど)からそのまま読める表になっている。
  * 最後の列 json がアプリの元データ。人が表を書き換えても、アプリには反映されない(json が正)。
+ *
+ * 注意: 下の列の並び・列名・place の値・json の recall/posterPath/genres は、縁泉GASと「その日」の
+ * 共通ライブラリが読む約束になっている。変える(列を足すことも含む)前に hub/README.md の
+ * 「ほかのアプリが読む約束」を読み、相手側も直すこと。
  */
 
 const FILM_COLS = ['id', 'rev', 'mtime', 'deleted', 'title', 'year', 'directors', 'status', 'lastSeen', 'seenCount', 'category', 'tmdbId', 'json'];
